@@ -6,13 +6,16 @@ use ratatui::widgets::Widget;
 use crate::theme::Theme;
 
 /// Height of the header area in terminal rows.
-pub const HEADER_HEIGHT: u16 = 7;
+pub const HEADER_HEIGHT: u16 = 10;
 
-/// ASCII art logo — "SEXY CLAUDE" in Calvin S figlet style (3 rows, ~38 chars wide).
-const LOGO: [&str; 3] = [
-    "╔═╗╔═╗═╗ ╦╦ ╦  ╔═╗╦  ╔═╗╦ ╦╔╦╗╔═╗",
-    "╚═╗║╣ ╠╦╝╚╦╝  ║  ║  ╠═╣║ ║ ║║║╣ ",
-    "╚═╝╚═╝╩╚═ ╩   ╚═╝╩═╝╩ ╩╚═╝═╩╝╚═╝",
+/// ASCII art logo — "SEXY CLAUDE" in Big figlet style (6 rows, ~76 chars wide).
+const LOGO: [&str; 6] = [
+    r"  _____ ________   ____     __   _____ _              _    _ _____  ______ ",
+    r" / ____|  ____\ \ / /\ \   / /  / ____| |        /\  | |  | |  __ \|  ____|",
+    r"| (___ | |__   \ V /  \ \_/ /  | |    | |       /  \ | |  | | |  | | |__   ",
+    r" \___ \|  __|   > <    \   /   | |    | |      / /\ \| |  | | |  | |  __|  ",
+    r" ____) | |____ / . \    | |    | |____| |____ / ____ \ |__| | |__| | |____ ",
+    r"|_____/|______/_/ \_\   |_|     \_____|______/_/    \_\____/|_____/|______|",
 ];
 
 /// Sparkle characters — cycled through for the particle effect.
@@ -52,7 +55,7 @@ impl Widget for Header<'_> {
         // --- Row 0: sparkle particle row ---
         self.render_sparkle_row(area.top(), area, buf, 0);
 
-        // --- Rows 1-3: centered ASCII art logo with gradient wave + shimmer ---
+        // --- Rows 1-6: centered ASCII art logo with gradient wave + shimmer ---
         let logo_start_y = area.top() + 1;
         for (row_idx, line) in LOGO.iter().enumerate() {
             let y = logo_start_y + row_idx as u16;
@@ -98,17 +101,17 @@ impl Widget for Header<'_> {
             }
         }
 
-        // --- Row 4: sparkle particle row ---
-        if area.top() + 4 < area.bottom() {
-            self.render_sparkle_row(area.top() + 4, area, buf, 1);
+        // --- Row 7: sparkle particle row ---
+        if area.top() + 7 < area.bottom() {
+            self.render_sparkle_row(area.top() + 7, area, buf, 1);
         }
 
-        // --- Row 5: version text centered ---
-        if area.top() + 5 < area.bottom() {
+        // --- Row 8: version text centered ---
+        if area.top() + 8 < area.bottom() {
             let version = format!("v{}", env!("CARGO_PKG_VERSION"));
             let ver_len = version.len() as u16;
             let ver_x = area.left() + area.width.saturating_sub(ver_len) / 2;
-            let ver_y = area.top() + 5;
+            let ver_y = area.top() + 8;
 
             let ver_phase = frame as f64 * 0.02;
             for (i, ch) in version.chars().enumerate() {
@@ -126,9 +129,9 @@ impl Widget for Header<'_> {
             }
         }
 
-        // --- Row 6: thin decorative line ---
-        if area.top() + 6 < area.bottom() {
-            let line_y = area.top() + 6;
+        // --- Row 9: thin decorative line ---
+        if area.top() + 9 < area.bottom() {
+            let line_y = area.top() + 9;
             let line_phase = frame as f64 * 0.03;
             for x in area.left()..area.right() {
                 let i = (x - area.left()) as f64;
@@ -304,7 +307,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         header.render(area, &mut buf);
 
-        // Logo should be on rows 1-3 — check row 1 has content
+        // Logo should be on rows 1-6 — check row 1 has content
         let row: String = (0..80)
             .map(|x| {
                 buf.cell((x, 1))
@@ -315,7 +318,7 @@ mod tests {
                     .unwrap_or(' ')
             })
             .collect();
-        assert!(row.contains('╔') || row.contains('═'));
+        assert!(row.contains('_') || row.contains('/') || row.contains('|'));
     }
 
     #[test]
