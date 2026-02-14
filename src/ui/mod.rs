@@ -11,6 +11,7 @@ use ratatui::Frame;
 use crate::theme::Theme;
 use claude_pane::ClaudePane;
 use header::{Header, HEADER_HEIGHT};
+use overlay::{OverlayState, OverlayWidget};
 use status_bar::StatusBar;
 
 /// Render the full UI layout.
@@ -43,4 +44,15 @@ pub fn render(
 
     // Status bar
     frame.render_widget(StatusBar::new(&theme.name, theme), chunks[2]);
+}
+
+/// Render an overlay popup on top of the existing UI.
+pub fn render_overlay(
+    frame: &mut Frame,
+    title: &str,
+    state: &OverlayState,
+    theme: &Theme,
+) {
+    let widget = OverlayWidget::new(title, state, theme);
+    frame.render_widget(widget, frame.area());
 }

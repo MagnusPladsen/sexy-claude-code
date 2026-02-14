@@ -12,6 +12,7 @@ use crate::terminal::TerminalEmulator;
 use crate::theme::Theme;
 use crate::ui;
 use crate::ui::header::HEADER_HEIGHT;
+use crate::ui::overlay::{OverlayItem, OverlayState};
 
 enum Msg {
     PtyOutput(Vec<u8>),
@@ -21,6 +22,12 @@ enum Msg {
     Tick,
 }
 
+enum AppMode {
+    Normal,
+    ActionMenu(OverlayState),
+    ThemePicker(OverlayState),
+}
+
 pub struct App {
     config: Config,
     theme: Theme,
@@ -28,10 +35,12 @@ pub struct App {
     emulator: TerminalEmulator,
     should_quit: bool,
     frame_count: u64,
+    mode: AppMode,
+    theme_name: String,
 }
 
 impl App {
-    pub fn new(config: Config, theme: Theme, pty: PtyProcess, rows: u16, cols: u16) -> Self {
+    pub fn new(config: Config, theme: Theme, theme_name: String, pty: PtyProcess, rows: u16, cols: u16) -> Self {
         // Reserve space for header, top/bottom border (2 rows), and status bar (1 row)
         let emu_rows = rows.saturating_sub(3 + HEADER_HEIGHT);
         let emu_cols = cols.saturating_sub(2); // account for left/right borders
@@ -43,6 +52,8 @@ impl App {
             emulator: TerminalEmulator::new(emu_rows, emu_cols),
             should_quit: false,
             frame_count: 0,
+            mode: AppMode::Normal,
+            theme_name,
         }
     }
 
@@ -123,18 +134,157 @@ impl App {
     }
 
     fn handle_key(&mut self, key: event::KeyEvent) -> Result<()> {
-        // Ctrl+Q is our only intercepted key — quit the wrapper
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+        match &self.mode {
+            AppMode::Normal => self.handle_key_normal(key),
+            AppMode::ActionMenu(_) | AppMode::ThemePicker(_) => self.handle_key_overlay(key),
+        }
+    }
+
+    fn handle_key_normal(&mut self, key: event::KeyEvent) -> Result<()> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+        if ctrl && key.code == KeyCode::Char('q') {
             self.should_quit = true;
             return Ok(());
         }
 
-        // Everything else passes straight through to the PTY
+        if ctrl && key.code == KeyCode::Char('k') {
+            self.open_action_menu();
+            return Ok(());
+        }
+
+        if ctrl && key.code == KeyCode::Char('t') {
+            self.open_theme_picker();
+            return Ok(());
+        }
+
+        // Pass through to PTY
         let bytes = key_to_bytes(&key);
         if !bytes.is_empty() {
             self.pty_write(&bytes)?;
         }
+        Ok(())
+    }
 
+    fn handle_key_overlay(&mut self, key: event::KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                self.close_overlay();
+            }
+            KeyCode::Enter => {
+                self.confirm_overlay()?;
+            }
+            KeyCode::Up => {
+                if let AppMode::ActionMenu(ref mut state) | AppMode::ThemePicker(ref mut state) = self.mode {
+                    state.move_up();
+                }
+                self.preview_theme();
+            }
+            KeyCode::Down => {
+                if let AppMode::ActionMenu(ref mut state) | AppMode::ThemePicker(ref mut state) = self.mode {
+                    state.move_down();
+                }
+                self.preview_theme();
+            }
+            KeyCode::Backspace => {
+                if let AppMode::ActionMenu(ref mut state) | AppMode::ThemePicker(ref mut state) = self.mode {
+                    state.backspace();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let AppMode::ActionMenu(ref mut state) | AppMode::ThemePicker(ref mut state) = self.mode {
+                    state.type_char(c);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn open_theme_picker(&mut self) {
+        let themes = crate::theme::Theme::list_available();
+        let items: Vec<OverlayItem> = themes
+            .iter()
+            .map(|name| {
+                let display = crate::theme::Theme::load(name)
+                    .map(|t| t.name)
+                    .unwrap_or_else(|_| name.clone());
+                OverlayItem {
+                    label: display,
+                    value: name.clone(),
+                    hint: String::new(),
+                }
+            })
+            .collect();
+
+        let current_idx = items.iter().position(|i| i.value == self.theme_name).unwrap_or(0);
+        let mut state = OverlayState::new(items, Some(self.theme_name.clone()));
+        state.selected = current_idx;
+        self.mode = AppMode::ThemePicker(state);
+    }
+
+    fn open_action_menu(&mut self) {
+        let items = vec![
+            OverlayItem {
+                label: "Switch Theme".to_string(),
+                value: "theme".to_string(),
+                hint: "Ctrl+T".to_string(),
+            },
+            OverlayItem {
+                label: "Quit".to_string(),
+                value: "quit".to_string(),
+                hint: "Ctrl+Q".to_string(),
+            },
+        ];
+        self.mode = AppMode::ActionMenu(OverlayState::new(items, None));
+    }
+
+    fn preview_theme(&mut self) {
+        if let AppMode::ThemePicker(ref state) = self.mode {
+            if let Some(value) = state.selected_value() {
+                if let Ok(new_theme) = crate::theme::Theme::load(&value) {
+                    self.theme = new_theme;
+                }
+            }
+        }
+    }
+
+    fn close_overlay(&mut self) {
+        if let AppMode::ThemePicker(ref state) = self.mode {
+            if let Some(ref original) = state.original_theme {
+                if let Ok(theme) = crate::theme::Theme::load(original) {
+                    self.theme = theme;
+                }
+            }
+        }
+        self.mode = AppMode::Normal;
+    }
+
+    fn confirm_overlay(&mut self) -> Result<()> {
+        let mode = std::mem::replace(&mut self.mode, AppMode::Normal);
+
+        match mode {
+            AppMode::ThemePicker(state) => {
+                if let Some(value) = state.selected_value() {
+                    if let Ok(new_theme) = crate::theme::Theme::load(&value) {
+                        self.theme = new_theme;
+                        self.theme_name = value.clone();
+                        let config_path = crate::config::Config::default_path();
+                        let _ = crate::config::save_theme(&value, &config_path);
+                    }
+                }
+            }
+            AppMode::ActionMenu(state) => {
+                if let Some(value) = state.selected_value() {
+                    match value.as_str() {
+                        "theme" => self.open_theme_picker(),
+                        "quit" => self.should_quit = true,
+                        _ => {}
+                    }
+                }
+            }
+            AppMode::Normal => {}
+        }
         Ok(())
     }
 
@@ -147,9 +297,17 @@ impl App {
         let screen = self.emulator.screen();
         let theme = &self.theme;
         let frame_count = self.frame_count;
+        let overlay = match &self.mode {
+            AppMode::ActionMenu(state) => Some(("Actions", state)),
+            AppMode::ThemePicker(state) => Some(("Select Theme", state)),
+            AppMode::Normal => None,
+        };
 
         terminal.draw(|frame| {
             ui::render(frame, screen, theme, frame_count);
+            if let Some((title, state)) = overlay {
+                ui::render_overlay(frame, title, state, theme);
+            }
         })?;
 
         Ok(())
