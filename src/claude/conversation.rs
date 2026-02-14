@@ -133,8 +133,19 @@ impl Conversation {
                 self.streaming = false;
             }
 
-            StreamEvent::Unknown(_) => {
-                // Ignored.
+            StreamEvent::Result { ref text, .. } => {
+                // Slash command results appear as assistant messages.
+                if !text.is_empty() {
+                    self.messages.push(Message {
+                        role: Role::Assistant,
+                        content: vec![ContentBlock::Text(text.clone())],
+                    });
+                }
+                self.streaming = false;
+            }
+
+            StreamEvent::SystemInit { .. } | StreamEvent::Unknown(_) => {
+                // Handled by App, not conversation state.
             }
         }
     }
