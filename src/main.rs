@@ -85,7 +85,8 @@ async fn main() -> Result<()> {
     )?;
 
     // Run the app
-    let mut app = app::App::new(config, theme, pty_process, rows, cols);
+    let theme_name_owned = theme_name.to_string();
+    let mut app = app::App::new(config, theme, theme_name_owned, pty_process, rows, cols);
     let result = app.run(&mut terminal).await;
 
     // Cleanup — always restore terminal

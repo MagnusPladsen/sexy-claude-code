@@ -40,6 +40,7 @@ pub struct ThemeColors {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Theme {
     pub name: String,
     pub background: Color,
@@ -102,15 +103,68 @@ impl Theme {
         Self::from_toml(DEFAULT_THEME).expect("embedded default theme must be valid")
     }
 
+    /// Discover all available theme names from bundled and user theme dirs.
+    pub fn list_available() -> Vec<String> {
+        let mut names = std::collections::BTreeSet::new();
+
+        // Bundled theme directories (exe-relative + cargo manifest)
+        for dir in Self::theme_dirs() {
+            Self::scan_theme_dir(&dir, &mut names);
+        }
+
+        // User themes: ~/.config/sexy-claude/themes/*.toml
+        let user_themes = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("~/.config"))
+            .join("sexy-claude")
+            .join("themes");
+        Self::scan_theme_dir(&user_themes, &mut names);
+
+        // Always include the embedded default
+        names.insert("catppuccin-mocha".to_string());
+
+        names.into_iter().collect()
+    }
+
+    fn scan_theme_dir(dir: &std::path::Path, names: &mut std::collections::BTreeSet<String>) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        names.insert(stem.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Directories to search for bundled themes (in priority order).
+    fn theme_dirs() -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+
+        // Alongside the executable: ../themes/ (for installed binaries)
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                dirs.push(parent.join("../themes"));
+            }
+        }
+
+        // Cargo project root (for cargo run / development)
+        dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes"));
+
+        dirs
+    }
+
     fn theme_path(name: &str) -> PathBuf {
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .unwrap_or_else(|| PathBuf::from("."));
-        exe_dir
-            .join("..")
-            .join("themes")
-            .join(format!("{name}.toml"))
+        let filename = format!("{name}.toml");
+        for dir in Self::theme_dirs() {
+            let path = dir.join(&filename);
+            if path.exists() {
+                return path;
+            }
+        }
+        // Fallback (won't exist, but caller checks .exists())
+        PathBuf::from("themes").join(filename)
     }
 
     fn from_toml(content: &str) -> Result<Self> {
@@ -191,5 +245,33 @@ mod tests {
     #[test]
     fn test_load_nonexistent_theme() {
         assert!(Theme::load("nonexistent-theme").is_err());
+    }
+
+    #[test]
+    fn test_list_available_includes_default() {
+        let themes = Theme::list_available();
+        assert!(themes.contains(&"catppuccin-mocha".to_string()));
+    }
+
+    #[test]
+    fn test_list_available_sorted() {
+        let themes = Theme::list_available();
+        let mut sorted = themes.clone();
+        sorted.sort();
+        assert_eq!(themes, sorted);
+    }
+
+    #[test]
+    fn test_all_bundled_themes_parse() {
+        let theme_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("themes");
+        for entry in std::fs::read_dir(&theme_dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+                let content = std::fs::read_to_string(&path).unwrap();
+                let result = Theme::from_toml(&content);
+                assert!(result.is_ok(), "Failed to parse theme {}: {:?}", path.display(), result.err());
+            }
+        }
     }
 }

@@ -1,0 +1,30 @@
+# Solarized Dark — inspired by Ethan Schoonover's Solarized
+# Credit: Ethan Schoonover
+# https://ethanschoonover.com/solarized/
+name = "Solarized Dark"
+
+[colors]
+background = "#002b36"
+foreground = "#839496"
+surface = "#073642"
+overlay = "#094856"
+
+primary = "#268bd2"
+secondary = "#2aa198"
+accent = "#d33682"
+
+success = "#859900"
+warning = "#b58900"
+error = "#dc322f"
+info = "#6c71c4"
+
+border = "#586e75"
+border_focused = "#268bd2"
+
+status_bg = "#00232c"
+status_fg = "#93a1a1"
+
+input_bg = "#073642"
+input_fg = "#839496"
+input_cursor = "#839496"
+input_placeholder = "#586e75"

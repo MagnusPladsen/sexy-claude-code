@@ -1,0 +1,30 @@
+# Kanagawa — inspired by the colors of the famous painting by Katsushika Hokusai
+# Credit: rebelot/kanagawa.nvim
+# https://github.com/rebelot/kanagawa.nvim
+name = "Kanagawa"
+
+[colors]
+background = "#1f1f28"
+foreground = "#dcd7ba"
+surface = "#2a2a37"
+overlay = "#363646"
+
+primary = "#7e9cd8"
+secondary = "#957fb8"
+accent = "#d27e99"
+
+success = "#76946a"
+warning = "#e6c384"
+error = "#c34043"
+info = "#7fb4ca"
+
+border = "#54546d"
+border_focused = "#7e9cd8"
+
+status_bg = "#16161d"
+status_fg = "#c8c093"
+
+input_bg = "#2a2a37"
+input_fg = "#dcd7ba"
+input_cursor = "#dcd7ba"
+input_placeholder = "#727169"

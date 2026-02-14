@@ -1,0 +1,30 @@
+# One Dark — inspired by Atom's One Dark theme
+# Credit: Binaryify/OneDark-Pro
+# https://github.com/Binaryify/OneDark-Pro
+name = "One Dark"
+
+[colors]
+background = "#282c34"
+foreground = "#abb2bf"
+surface = "#21252b"
+overlay = "#3e4451"
+
+primary = "#61afef"
+secondary = "#c678dd"
+accent = "#e06c75"
+
+success = "#98c379"
+warning = "#e5c07b"
+error = "#e06c75"
+info = "#56b6c2"
+
+border = "#3b4048"
+border_focused = "#61afef"
+
+status_bg = "#21252b"
+status_fg = "#9da5b4"
+
+input_bg = "#2c313a"
+input_fg = "#abb2bf"
+input_cursor = "#528bff"
+input_placeholder = "#5c6370"

@@ -1,0 +1,30 @@
+# Dracula — inspired by the Dracula theme
+# Credit: dracula/visual-studio-code
+# https://github.com/dracula/visual-studio-code
+name = "Dracula"
+
+[colors]
+background = "#282a36"
+foreground = "#f8f8f2"
+surface = "#343746"
+overlay = "#44475a"
+
+primary = "#bd93f9"
+secondary = "#8be9fd"
+accent = "#ff79c6"
+
+success = "#50fa7b"
+warning = "#f1fa8c"
+error = "#ff5555"
+info = "#8be9fd"
+
+border = "#6272a4"
+border_focused = "#bd93f9"
+
+status_bg = "#21222c"
+status_fg = "#f8f8f2"
+
+input_bg = "#343746"
+input_fg = "#f8f8f2"
+input_cursor = "#f8f8f2"
+input_placeholder = "#6272a4"
