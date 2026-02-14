@@ -1,23 +1,22 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::DefaultTerminal;
-use std::io::Read;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::claude::conversation::Conversation;
+use crate::claude::events::StreamEvent;
+use crate::claude::process::ClaudeProcess;
 use crate::config::Config;
-use crate::pty::PtyProcess;
-use crate::terminal::TerminalEmulator;
 use crate::theme::Theme;
 use crate::ui;
 use crate::ui::header::HEADER_HEIGHT;
+use crate::ui::input::InputEditor;
 use crate::ui::overlay::{OverlayItem, OverlayState};
 
 enum Msg {
-    PtyOutput(Vec<u8>),
-    PtyExited,
+    ClaudeEvent(StreamEvent),
+    ClaudeExited,
     Key(event::KeyEvent),
     Resize(u16, u16),
     Tick,
@@ -32,47 +31,52 @@ enum AppMode {
 pub struct App {
     config: Config,
     theme: Theme,
-    pty: Arc<Mutex<PtyProcess>>,
-    emulator: TerminalEmulator,
     conversation: Conversation,
-    scroll_offset: usize,
+    claude: Option<ClaudeProcess>,
+    input: InputEditor,
     should_quit: bool,
     frame_count: u64,
     mode: AppMode,
     theme_name: String,
+    scroll_offset: usize,
+    auto_scroll: bool,
+    command: String,
 }
 
 impl App {
-    pub fn new(config: Config, theme: Theme, theme_name: String, pty: PtyProcess, rows: u16, cols: u16) -> Self {
-        // Reserve space for header, top/bottom border (2 rows), and status bar (1 row)
-        let emu_rows = rows.saturating_sub(3 + HEADER_HEIGHT);
-        let emu_cols = cols.saturating_sub(2); // account for left/right borders
-
+    pub fn new(config: Config, theme: Theme, theme_name: String, command: String) -> Self {
         Self {
             config,
             theme,
-            pty: Arc::new(Mutex::new(pty)),
-            emulator: TerminalEmulator::new(emu_rows, emu_cols),
             conversation: Conversation::new(),
-            scroll_offset: 0,
+            claude: None,
+            input: InputEditor::new(),
             should_quit: false,
             frame_count: 0,
             mode: AppMode::Normal,
             theme_name,
+            scroll_offset: 0,
+            auto_scroll: true,
+            command,
         }
     }
 
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
 
-        // Spawn PTY reader task
-        let pty_reader = {
-            let pty = self.pty.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-            pty.take_reader()?
-        };
-        let tx_pty = tx.clone();
-        std::thread::spawn(move || {
-            pty_reader_loop(pty_reader, tx_pty);
+        // Spawn Claude process
+        let (claude_process, mut event_rx) = ClaudeProcess::spawn(&self.command)?;
+        self.claude = Some(claude_process);
+
+        // Forward Claude events to the main channel
+        let tx_claude = tx.clone();
+        tokio::spawn(async move {
+            while let Some(event) = event_rx.recv().await {
+                if tx_claude.send(Msg::ClaudeEvent(event)).is_err() {
+                    break;
+                }
+            }
+            let _ = tx_claude.send(Msg::ClaudeExited);
         });
 
         // Spawn crossterm event reader task
@@ -99,36 +103,41 @@ impl App {
 
         // Event loop
         while let Some(msg) = rx.recv().await {
-            self.update(msg)?;
+            self.update(msg).await?;
             if self.should_quit {
                 break;
             }
             self.view(terminal)?;
         }
 
+        // Cleanup
+        if let Some(ref mut claude) = self.claude {
+            let _ = claude.kill().await;
+        }
+
         Ok(())
     }
 
-    fn update(&mut self, msg: Msg) -> Result<()> {
+    async fn update(&mut self, msg: Msg) -> Result<()> {
         match msg {
-            Msg::PtyOutput(bytes) => {
-                self.emulator.process(&bytes);
+            Msg::ClaudeEvent(event) => {
+                self.conversation.apply_event(&event);
+                if self.auto_scroll {
+                    self.scroll_to_bottom();
+                }
             }
-            Msg::PtyExited => {
-                self.should_quit = true;
+            Msg::ClaudeExited => {
+                // Claude process ended
             }
             Msg::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     return Ok(());
                 }
-                self.handle_key(key)?;
+                self.handle_key(key).await?;
             }
-            Msg::Resize(width, height) => {
-                let emu_rows = height.saturating_sub(3 + HEADER_HEIGHT);
-                let emu_cols = width.saturating_sub(2);
-                self.emulator.resize(emu_rows, emu_cols);
-                if let Ok(pty) = self.pty.lock() {
-                    let _ = pty.resize(emu_cols, emu_rows);
+            Msg::Resize(_width, _height) => {
+                if self.auto_scroll {
+                    self.scroll_to_bottom();
                 }
             }
             Msg::Tick => {
@@ -138,15 +147,16 @@ impl App {
         Ok(())
     }
 
-    fn handle_key(&mut self, key: event::KeyEvent) -> Result<()> {
+    async fn handle_key(&mut self, key: event::KeyEvent) -> Result<()> {
         match &self.mode {
-            AppMode::Normal => self.handle_key_normal(key),
+            AppMode::Normal => self.handle_key_normal(key).await,
             AppMode::ActionMenu(_) | AppMode::ThemePicker(_) => self.handle_key_overlay(key),
         }
     }
 
-    fn handle_key_normal(&mut self, key: event::KeyEvent) -> Result<()> {
+    async fn handle_key_normal(&mut self, key: event::KeyEvent) -> Result<()> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
         if ctrl && key.code == KeyCode::Char('q') {
             self.should_quit = true;
@@ -163,11 +173,61 @@ impl App {
             return Ok(());
         }
 
-        // Pass through to PTY
-        let bytes = key_to_bytes(&key);
-        if !bytes.is_empty() {
-            self.pty_write(&bytes)?;
+        // Scrolling
+        match key.code {
+            KeyCode::PageUp => {
+                self.auto_scroll = false;
+                self.scroll_offset = self.scroll_offset.saturating_sub(10);
+                return Ok(());
+            }
+            KeyCode::PageDown => {
+                self.scroll_offset += 10;
+                self.clamp_scroll();
+                return Ok(());
+            }
+            _ => {}
         }
+
+        // Input handling
+        match key.code {
+            KeyCode::Enter if !shift => {
+                if !self.input.is_empty() && !self.conversation.is_streaming() {
+                    let text = self.input.take_content();
+                    self.conversation.push_user_message(text.clone());
+                    self.auto_scroll = true;
+                    self.scroll_to_bottom();
+                    if let Some(ref mut claude) = self.claude {
+                        claude.send_message(&text).await?;
+                    }
+                }
+            }
+            KeyCode::Enter if shift => {
+                self.input.insert_newline();
+            }
+            KeyCode::Char(c) if !ctrl => {
+                self.input.insert_char(c);
+            }
+            KeyCode::Backspace => {
+                self.input.backspace();
+            }
+            KeyCode::Delete => {
+                self.input.delete();
+            }
+            KeyCode::Left => {
+                self.input.move_left();
+            }
+            KeyCode::Right => {
+                self.input.move_right();
+            }
+            KeyCode::Home => {
+                self.input.move_home();
+            }
+            KeyCode::End => {
+                self.input.move_end();
+            }
+            _ => {}
+        }
+
         Ok(())
     }
 
@@ -180,30 +240,51 @@ impl App {
                 self.confirm_overlay()?;
             }
             KeyCode::Up => {
-                if let AppMode::ActionMenu(ref mut state) | AppMode::ThemePicker(ref mut state) = self.mode {
+                if let AppMode::ActionMenu(ref mut state) | AppMode::ThemePicker(ref mut state) =
+                    self.mode
+                {
                     state.move_up();
                 }
                 self.preview_theme();
             }
             KeyCode::Down => {
-                if let AppMode::ActionMenu(ref mut state) | AppMode::ThemePicker(ref mut state) = self.mode {
+                if let AppMode::ActionMenu(ref mut state) | AppMode::ThemePicker(ref mut state) =
+                    self.mode
+                {
                     state.move_down();
                 }
                 self.preview_theme();
             }
             KeyCode::Backspace => {
-                if let AppMode::ActionMenu(ref mut state) | AppMode::ThemePicker(ref mut state) = self.mode {
+                if let AppMode::ActionMenu(ref mut state) | AppMode::ThemePicker(ref mut state) =
+                    self.mode
+                {
                     state.backspace();
                 }
             }
             KeyCode::Char(c) => {
-                if let AppMode::ActionMenu(ref mut state) | AppMode::ThemePicker(ref mut state) = self.mode {
+                if let AppMode::ActionMenu(ref mut state) | AppMode::ThemePicker(ref mut state) =
+                    self.mode
+                {
                     state.type_char(c);
                 }
             }
             _ => {}
         }
         Ok(())
+    }
+
+    fn scroll_to_bottom(&mut self) {
+        self.scroll_offset = usize::MAX;
+    }
+
+    fn clamp_scroll(&mut self) {
+        let total = ui::claude_pane::total_lines(&self.conversation, 80);
+        let max_scroll = total.saturating_sub(10);
+        if self.scroll_offset >= max_scroll {
+            self.scroll_offset = max_scroll;
+            self.auto_scroll = true;
+        }
     }
 
     fn open_theme_picker(&mut self) {
@@ -222,7 +303,10 @@ impl App {
             })
             .collect();
 
-        let current_idx = items.iter().position(|i| i.value == self.theme_name).unwrap_or(0);
+        let current_idx = items
+            .iter()
+            .position(|i| i.value == self.theme_name)
+            .unwrap_or(0);
         let mut state = OverlayState::new(items, Some(self.theme_name.clone()));
         state.selected = current_idx;
         self.mode = AppMode::ThemePicker(state);
@@ -293,15 +377,8 @@ impl App {
         Ok(())
     }
 
-    fn pty_write(&self, data: &[u8]) -> Result<()> {
-        let pty = self.pty.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        pty.write(data)
-    }
-
     fn view(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        let conversation = &self.conversation;
         let theme = &self.theme;
-        let scroll_offset = self.scroll_offset;
         let frame_count = self.frame_count;
         let overlay = match &self.mode {
             AppMode::ActionMenu(state) => Some(("Actions", state)),
@@ -309,93 +386,38 @@ impl App {
             AppMode::Normal => None,
         };
 
+        // Clamp scroll before rendering
+        let term_size = terminal.size()?;
+        let visible_height = term_size.height.saturating_sub(HEADER_HEIGHT + 4) as usize;
+        let total_conv_lines = ui::claude_pane::total_lines(
+            &self.conversation,
+            term_size.width.saturating_sub(4) as usize,
+        );
+        if self.auto_scroll || self.scroll_offset > total_conv_lines {
+            self.scroll_offset = total_conv_lines.saturating_sub(visible_height);
+        }
+
+        let conversation = &self.conversation;
+        let input = &self.input;
+        let scroll_offset = self.scroll_offset;
+        let is_streaming = self.conversation.is_streaming();
+
         terminal.draw(|frame| {
-            ui::render(frame, conversation, theme, scroll_offset, frame_count);
+            ui::render(
+                frame,
+                conversation,
+                input,
+                theme,
+                frame_count,
+                scroll_offset,
+                is_streaming,
+            );
             if let Some((title, state)) = overlay {
                 ui::render_overlay(frame, title, state, theme);
             }
         })?;
 
         Ok(())
-    }
-}
-
-/// Convert a crossterm KeyEvent into raw bytes to send to the PTY.
-fn key_to_bytes(key: &event::KeyEvent) -> Vec<u8> {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
-
-    match key.code {
-        KeyCode::Char(c) => {
-            if ctrl {
-                // Ctrl+A = 0x01, Ctrl+B = 0x02, ..., Ctrl+Z = 0x1a
-                let byte = (c as u8).wrapping_sub(b'a').wrapping_add(1);
-                vec![byte]
-            } else if alt {
-                let mut bytes = vec![0x1b]; // ESC prefix for Alt
-                let mut buf = [0u8; 4];
-                bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
-                bytes
-            } else {
-                let mut buf = [0u8; 4];
-                c.encode_utf8(&mut buf).as_bytes().to_vec()
-            }
-        }
-        KeyCode::Enter => vec![b'\r'],
-        KeyCode::Backspace => vec![0x7f],
-        KeyCode::Delete => b"\x1b[3~".to_vec(),
-        KeyCode::Tab => {
-            if key.modifiers.contains(KeyModifiers::SHIFT) {
-                b"\x1b[Z".to_vec()
-            } else {
-                vec![b'\t']
-            }
-        }
-        KeyCode::Esc => vec![0x1b],
-        KeyCode::Up => b"\x1b[A".to_vec(),
-        KeyCode::Down => b"\x1b[B".to_vec(),
-        KeyCode::Right => b"\x1b[C".to_vec(),
-        KeyCode::Left => b"\x1b[D".to_vec(),
-        KeyCode::Home => b"\x1b[H".to_vec(),
-        KeyCode::End => b"\x1b[F".to_vec(),
-        KeyCode::PageUp => b"\x1b[5~".to_vec(),
-        KeyCode::PageDown => b"\x1b[6~".to_vec(),
-        KeyCode::F(n) => match n {
-            1 => b"\x1bOP".to_vec(),
-            2 => b"\x1bOQ".to_vec(),
-            3 => b"\x1bOR".to_vec(),
-            4 => b"\x1bOS".to_vec(),
-            5 => b"\x1b[15~".to_vec(),
-            6 => b"\x1b[17~".to_vec(),
-            7 => b"\x1b[18~".to_vec(),
-            8 => b"\x1b[19~".to_vec(),
-            9 => b"\x1b[20~".to_vec(),
-            10 => b"\x1b[21~".to_vec(),
-            11 => b"\x1b[23~".to_vec(),
-            12 => b"\x1b[24~".to_vec(),
-            _ => vec![],
-        },
-        KeyCode::Insert => b"\x1b[2~".to_vec(),
-        _ => vec![],
-    }
-}
-
-fn pty_reader_loop(mut reader: Box<dyn Read + Send>, tx: mpsc::UnboundedSender<Msg>) {
-    let mut buf = [0u8; 4096];
-    loop {
-        match reader.read(&mut buf) {
-            Ok(0) => {
-                let _ = tx.send(Msg::PtyExited);
-                break;
-            }
-            Ok(n) => {
-                let _ = tx.send(Msg::PtyOutput(buf[..n].to_vec()));
-            }
-            Err(_) => {
-                let _ = tx.send(Msg::PtyExited);
-                break;
-            }
-        }
     }
 }
 
