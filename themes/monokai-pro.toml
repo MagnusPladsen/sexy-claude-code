@@ -1,0 +1,30 @@
+# Monokai Pro (Spectrum filter) — inspired by the Monokai Pro theme
+# Credit: monokai/monokai-pro-vscode
+# https://monokai.pro
+name = "Monokai Pro"
+
+[colors]
+background = "#222222"
+foreground = "#f7f1ff"
+surface = "#2d2a2e"
+overlay = "#403e41"
+
+primary = "#fc9867"
+secondary = "#ab9df2"
+accent = "#ff6188"
+
+success = "#a9dc76"
+warning = "#ffd866"
+error = "#ff6188"
+info = "#78dce8"
+
+border = "#5b595c"
+border_focused = "#fc9867"
+
+status_bg = "#19181a"
+status_fg = "#c1c0c0"
+
+input_bg = "#2d2a2e"
+input_fg = "#f7f1ff"
+input_cursor = "#fcfcfa"
+input_placeholder = "#727072"

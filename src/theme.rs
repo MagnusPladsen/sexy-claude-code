@@ -244,4 +244,18 @@ mod tests {
         sorted.sort();
         assert_eq!(themes, sorted);
     }
+
+    #[test]
+    fn test_all_bundled_themes_parse() {
+        let theme_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("themes");
+        for entry in std::fs::read_dir(&theme_dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+                let content = std::fs::read_to_string(&path).unwrap();
+                let result = Theme::from_toml(&content);
+                assert!(result.is_ok(), "Failed to parse theme {}: {:?}", path.display(), result.err());
+            }
+        }
+    }
 }
