@@ -55,7 +55,7 @@ impl<'a> Widget for StatusBar<'a> {
         }
 
         // Right: help hint
-        let right = "Ctrl+Q: quit ";
+        let right = "Ctrl+K: menu | Ctrl+T: theme | Ctrl+Q: quit ";
         let right_start = area.right().saturating_sub(right.len() as u16);
         for (i, ch) in right.chars().enumerate() {
             let x = right_start + i as u16;

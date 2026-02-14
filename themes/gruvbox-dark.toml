@@ -1,0 +1,30 @@
+# Gruvbox Dark — inspired by the Gruvbox color scheme
+# Credit: morhetz/gruvbox
+# https://github.com/morhetz/gruvbox
+name = "Gruvbox Dark"
+
+[colors]
+background = "#282828"
+foreground = "#ebdbb2"
+surface = "#3c3836"
+overlay = "#504945"
+
+primary = "#fabd2f"
+secondary = "#83a598"
+accent = "#d3869b"
+
+success = "#b8bb26"
+warning = "#fabd2f"
+error = "#fb4934"
+info = "#83a598"
+
+border = "#665c54"
+border_focused = "#fabd2f"
+
+status_bg = "#1d2021"
+status_fg = "#a89984"
+
+input_bg = "#3c3836"
+input_fg = "#ebdbb2"
+input_cursor = "#ebdbb2"
+input_placeholder = "#928374"

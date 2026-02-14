@@ -1,0 +1,30 @@
+# Nord — inspired by the Nord color palette
+# Credit: nordtheme/visual-studio-code
+# https://www.nordtheme.com
+name = "Nord"
+
+[colors]
+background = "#2e3440"
+foreground = "#d8dee9"
+surface = "#3b4252"
+overlay = "#434c5e"
+
+primary = "#88c0d0"
+secondary = "#81a1c1"
+accent = "#b48ead"
+
+success = "#a3be8c"
+warning = "#ebcb8b"
+error = "#bf616a"
+info = "#5e81ac"
+
+border = "#4c566a"
+border_focused = "#88c0d0"
+
+status_bg = "#272c36"
+status_fg = "#d8dee9"
+
+input_bg = "#3b4252"
+input_fg = "#eceff4"
+input_cursor = "#d8dee9"
+input_placeholder = "#4c566a"

@@ -57,7 +57,7 @@ impl Config {
         Ok(config)
     }
 
-    fn default_path() -> PathBuf {
+    pub fn default_path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("~/.config"))
             .join("sexy-claude")
@@ -72,6 +72,38 @@ impl Config {
         );
         Ok(())
     }
+}
+
+/// Save the selected theme name to the config file.
+/// Preserves all other config values. Creates the file and parent dirs if needed.
+pub fn save_theme(theme_name: &str, path: &std::path::Path) -> Result<()> {
+    use std::collections::BTreeMap;
+
+    // Read existing config as a generic TOML table (preserves unknown fields)
+    let mut table: BTreeMap<String, toml::Value> = if path.exists() {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read config at {}", path.display()))?;
+        toml::from_str(&content).unwrap_or_default()
+    } else {
+        BTreeMap::new()
+    };
+
+    table.insert(
+        "theme".to_string(),
+        toml::Value::String(theme_name.to_string()),
+    );
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create config directory {}", parent.display()))?;
+    }
+
+    let content = toml::to_string_pretty(&table)
+        .context("Failed to serialize config")?;
+    std::fs::write(path, content)
+        .with_context(|| format!("Failed to write config to {}", path.display()))?;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -136,5 +168,37 @@ mod tests {
     fn test_load_nonexistent_returns_default() {
         let config = Config::load(Some(&PathBuf::from("/nonexistent/config.toml"))).unwrap();
         assert_eq!(config.command, "claude");
+    }
+
+    #[test]
+    fn test_save_theme_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        save_theme("nord", &path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("theme = \"nord\""));
+    }
+
+    #[test]
+    fn test_save_theme_preserves_other_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "command = \"custom-claude\"\ntheme = \"old\"\nfps = 60\n").unwrap();
+        save_theme("dracula", &path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("theme = \"dracula\""));
+        assert!(content.contains("command = \"custom-claude\""));
+        assert!(content.contains("fps = 60"));
+    }
+
+    #[test]
+    fn test_save_theme_adds_to_existing_without_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "fps = 45\n").unwrap();
+        save_theme("nord", &path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("theme = \"nord\""));
+        assert!(content.contains("fps = 45"));
     }
 }
