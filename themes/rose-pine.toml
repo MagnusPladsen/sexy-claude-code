@@ -1,0 +1,30 @@
+# Rosé Pine — inspired by the Rosé Pine theme
+# Credit: rose-pine/vscode
+# https://rosepinetheme.com
+name = "Rosé Pine"
+
+[colors]
+background = "#191724"
+foreground = "#e0def4"
+surface = "#1f1d2e"
+overlay = "#26233a"
+
+primary = "#c4a7e7"
+secondary = "#9ccfd8"
+accent = "#ebbcba"
+
+success = "#31748f"
+warning = "#f6c177"
+error = "#eb6f92"
+info = "#9ccfd8"
+
+border = "#403d52"
+border_focused = "#c4a7e7"
+
+status_bg = "#16141f"
+status_fg = "#908caa"
+
+input_bg = "#1f1d2e"
+input_fg = "#e0def4"
+input_cursor = "#e0def4"
+input_placeholder = "#6e6a86"
