@@ -5,6 +5,7 @@ use serde::Deserialize;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum StreamEvent {
     MessageStart { message_id: String, model: String },
     ContentBlockStart { index: usize, block_type: ContentBlockType },
