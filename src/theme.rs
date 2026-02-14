@@ -102,6 +102,44 @@ impl Theme {
         Self::from_toml(DEFAULT_THEME).expect("embedded default theme must be valid")
     }
 
+    /// Discover all available theme names from bundled and user theme dirs.
+    pub fn list_available() -> Vec<String> {
+        let mut names = std::collections::BTreeSet::new();
+
+        // Bundled themes next to executable: ../themes/*.toml
+        let exe_themes = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.join("../themes")));
+        if let Some(dir) = exe_themes {
+            Self::scan_theme_dir(&dir, &mut names);
+        }
+
+        // User themes: ~/.config/sexy-claude/themes/*.toml
+        let user_themes = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("~/.config"))
+            .join("sexy-claude")
+            .join("themes");
+        Self::scan_theme_dir(&user_themes, &mut names);
+
+        // Always include the embedded default
+        names.insert("catppuccin-mocha".to_string());
+
+        names.into_iter().collect()
+    }
+
+    fn scan_theme_dir(dir: &std::path::Path, names: &mut std::collections::BTreeSet<String>) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        names.insert(stem.to_string());
+                    }
+                }
+            }
+        }
+    }
+
     fn theme_path(name: &str) -> PathBuf {
         let exe_dir = std::env::current_exe()
             .ok()
@@ -191,5 +229,19 @@ mod tests {
     #[test]
     fn test_load_nonexistent_theme() {
         assert!(Theme::load("nonexistent-theme").is_err());
+    }
+
+    #[test]
+    fn test_list_available_includes_default() {
+        let themes = Theme::list_available();
+        assert!(themes.contains(&"catppuccin-mocha".to_string()));
+    }
+
+    #[test]
+    fn test_list_available_sorted() {
+        let themes = Theme::list_available();
+        let mut sorted = themes.clone();
+        sorted.sort();
+        assert_eq!(themes, sorted);
     }
 }
