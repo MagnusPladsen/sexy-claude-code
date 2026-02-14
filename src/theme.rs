@@ -107,11 +107,8 @@ impl Theme {
     pub fn list_available() -> Vec<String> {
         let mut names = std::collections::BTreeSet::new();
 
-        // Bundled themes next to executable: ../themes/*.toml
-        let exe_themes = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.join("../themes")));
-        if let Some(dir) = exe_themes {
+        // Bundled theme directories (exe-relative + cargo manifest)
+        for dir in Self::theme_dirs() {
             Self::scan_theme_dir(&dir, &mut names);
         }
 
@@ -141,15 +138,33 @@ impl Theme {
         }
     }
 
+    /// Directories to search for bundled themes (in priority order).
+    fn theme_dirs() -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+
+        // Alongside the executable: ../themes/ (for installed binaries)
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                dirs.push(parent.join("../themes"));
+            }
+        }
+
+        // Cargo project root (for cargo run / development)
+        dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes"));
+
+        dirs
+    }
+
     fn theme_path(name: &str) -> PathBuf {
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .unwrap_or_else(|| PathBuf::from("."));
-        exe_dir
-            .join("..")
-            .join("themes")
-            .join(format!("{name}.toml"))
+        let filename = format!("{name}.toml");
+        for dir in Self::theme_dirs() {
+            let path = dir.join(&filename);
+            if path.exists() {
+                return path;
+            }
+        }
+        // Fallback (won't exist, but caller checks .exists())
+        PathBuf::from("themes").join(filename)
     }
 
     fn from_toml(content: &str) -> Result<Self> {
