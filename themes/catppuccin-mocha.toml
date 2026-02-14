@@ -1,0 +1,34 @@
+# Catppuccin Mocha — Default theme for sexy-claude
+name = "Catppuccin Mocha"
+
+[colors]
+# Base
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+surface = "#313244"
+overlay = "#45475a"
+
+# Accent
+primary = "#cba6f7"     # Mauve
+secondary = "#89b4fa"    # Blue
+accent = "#f5c2e7"       # Pink
+
+# Semantic
+success = "#a6e3a1"      # Green
+warning = "#f9e2af"       # Yellow
+error = "#f38ba8"         # Red
+info = "#89dceb"          # Sky
+
+# Border
+border = "#585b70"
+border_focused = "#cba6f7"
+
+# Status bar
+status_bg = "#181825"
+status_fg = "#a6adc8"
+
+# Input
+input_bg = "#313244"
+input_fg = "#cdd6f4"
+input_cursor = "#f5e0dc"
+input_placeholder = "#6c7086"
