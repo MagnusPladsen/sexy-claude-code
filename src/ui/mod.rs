@@ -8,6 +8,7 @@ pub mod status_bar;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::Frame;
 
+use crate::claude::conversation::Conversation;
 use crate::theme::Theme;
 use claude_pane::ClaudePane;
 use header::{Header, HEADER_HEIGHT};
@@ -17,8 +18,9 @@ use status_bar::StatusBar;
 /// Render the full UI layout.
 pub fn render(
     frame: &mut Frame,
-    screen: &vt100::Screen,
+    conversation: &Conversation,
     theme: &Theme,
+    scroll_offset: usize,
     frame_count: u64,
 ) {
     let size = frame.area();
@@ -40,7 +42,7 @@ pub fn render(
     let claude_block = borders::themed_block("", true, theme);
     let claude_inner = claude_block.inner(chunks[1]);
     frame.render_widget(claude_block, chunks[1]);
-    frame.render_widget(ClaudePane::new(screen, theme.background), claude_inner);
+    frame.render_widget(ClaudePane::new(conversation, theme, scroll_offset), claude_inner);
 
     // Status bar
     frame.render_widget(StatusBar::new(&theme.name, theme), chunks[2]);

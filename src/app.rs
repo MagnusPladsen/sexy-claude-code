@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+use crate::claude::conversation::Conversation;
 use crate::config::Config;
 use crate::pty::PtyProcess;
 use crate::terminal::TerminalEmulator;
@@ -33,6 +34,8 @@ pub struct App {
     theme: Theme,
     pty: Arc<Mutex<PtyProcess>>,
     emulator: TerminalEmulator,
+    conversation: Conversation,
+    scroll_offset: usize,
     should_quit: bool,
     frame_count: u64,
     mode: AppMode,
@@ -50,6 +53,8 @@ impl App {
             theme,
             pty: Arc::new(Mutex::new(pty)),
             emulator: TerminalEmulator::new(emu_rows, emu_cols),
+            conversation: Conversation::new(),
+            scroll_offset: 0,
             should_quit: false,
             frame_count: 0,
             mode: AppMode::Normal,
@@ -294,8 +299,9 @@ impl App {
     }
 
     fn view(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        let screen = self.emulator.screen();
+        let conversation = &self.conversation;
         let theme = &self.theme;
+        let scroll_offset = self.scroll_offset;
         let frame_count = self.frame_count;
         let overlay = match &self.mode {
             AppMode::ActionMenu(state) => Some(("Actions", state)),
@@ -304,7 +310,7 @@ impl App {
         };
 
         terminal.draw(|frame| {
-            ui::render(frame, screen, theme, frame_count);
+            ui::render(frame, conversation, theme, scroll_offset, frame_count);
             if let Some((title, state)) = overlay {
                 ui::render_overlay(frame, title, state, theme);
             }
