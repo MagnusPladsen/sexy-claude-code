@@ -6,7 +6,22 @@
       "WebFetch(domain:docs.rs)",
       "Bash(git init:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo run:*)",
+      "Bash(target/release/sc:*)",
+      "Bash(echo:*)",
+      "Bash(env:*)",
+      "Bash(git -C /Users/magnuspladsen/git/sexy-claude-code status)",
+      "Bash(git -C /Users/magnuspladsen/git/sexy-claude-code remote -v)",
+      "Bash(gh auth status:*)",
+      "Bash(git -C /Users/magnuspladsen/git/sexy-claude-code diff --cached --stat)",
+      "Bash(git -C /Users/magnuspladsen/git/sexy-claude-code log --oneline)",
+      "Bash(gh repo create:*)",
+      "Skill(commit-commands:commit-push-pr)",
+      "Bash(git checkout:*)"
     ]
   }
 }

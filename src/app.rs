@@ -11,6 +11,7 @@ use crate::pty::PtyProcess;
 use crate::terminal::TerminalEmulator;
 use crate::theme::Theme;
 use crate::ui;
+use crate::ui::header::HEADER_HEIGHT;
 
 enum Msg {
     PtyOutput(Vec<u8>),
@@ -26,12 +27,13 @@ pub struct App {
     pty: Arc<Mutex<PtyProcess>>,
     emulator: TerminalEmulator,
     should_quit: bool,
+    frame_count: u64,
 }
 
 impl App {
     pub fn new(config: Config, theme: Theme, pty: PtyProcess, rows: u16, cols: u16) -> Self {
-        // Reserve space for status bar (1 row) and top/bottom border (2 rows)
-        let emu_rows = rows.saturating_sub(3);
+        // Reserve space for header, top/bottom border (2 rows), and status bar (1 row)
+        let emu_rows = rows.saturating_sub(3 + HEADER_HEIGHT);
         let emu_cols = cols.saturating_sub(2); // account for left/right borders
 
         Self {
@@ -40,6 +42,7 @@ impl App {
             pty: Arc::new(Mutex::new(pty)),
             emulator: TerminalEmulator::new(emu_rows, emu_cols),
             should_quit: false,
+            frame_count: 0,
         }
     }
 
@@ -105,14 +108,16 @@ impl App {
                 self.handle_key(key)?;
             }
             Msg::Resize(width, height) => {
-                let emu_rows = height.saturating_sub(3);
+                let emu_rows = height.saturating_sub(3 + HEADER_HEIGHT);
                 let emu_cols = width.saturating_sub(2);
                 self.emulator.resize(emu_rows, emu_cols);
                 if let Ok(pty) = self.pty.lock() {
                     let _ = pty.resize(emu_cols, emu_rows);
                 }
             }
-            Msg::Tick => {}
+            Msg::Tick => {
+                self.frame_count = self.frame_count.wrapping_add(1);
+            }
         }
         Ok(())
     }
@@ -141,9 +146,10 @@ impl App {
     fn view(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let screen = self.emulator.screen();
         let theme = &self.theme;
+        let frame_count = self.frame_count;
 
         terminal.draw(|frame| {
-            ui::render(frame, screen, theme);
+            ui::render(frame, screen, theme, frame_count);
         })?;
 
         Ok(())
