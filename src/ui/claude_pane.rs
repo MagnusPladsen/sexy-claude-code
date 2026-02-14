@@ -222,7 +222,7 @@ fn render_text_block(
                 }
             }
             let next_special = remaining
-                .find(|c: char| c == '*' || c == '`')
+                .find(['*', '`'])
                 .unwrap_or(remaining.len());
             if next_special > 0 {
                 spans.push(StyledSpan {

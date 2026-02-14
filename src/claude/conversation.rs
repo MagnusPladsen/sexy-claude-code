@@ -11,6 +11,7 @@ pub enum Role {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum ContentBlock {
     Text(String),
     ToolUse {
@@ -147,6 +148,7 @@ impl Conversation {
     ///
     /// This is useful for rendering the currently-streaming response. Returns
     /// an empty string if there is no assistant message or no text block.
+    #[allow(dead_code)]
     pub fn streaming_text(&self) -> &str {
         self.messages
             .last()

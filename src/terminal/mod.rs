@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 pub mod converter;
 
 use vt100::Parser;

@@ -66,6 +66,7 @@ impl ClaudeProcess {
     }
 
     /// Check if the process is still running.
+    #[allow(dead_code)]
     pub fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>> {
         Ok(self.child.try_wait()?)
     }
