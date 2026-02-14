@@ -65,8 +65,8 @@ async fn main() -> Result<()> {
         anyhow::bail!("Terminal too small ({}x{}). Need at least 40x10.", cols, rows);
     }
 
-    // PTY gets the inner size (minus our chrome: 2 border rows + 1 status bar)
-    let pty_rows = rows.saturating_sub(3);
+    // PTY gets the inner size (minus our chrome: header + 2 border rows + 1 status bar)
+    let pty_rows = rows.saturating_sub(3 + ui::header::HEADER_HEIGHT);
     let pty_cols = cols.saturating_sub(2); // minus left/right borders
 
     // Extra environment for the child process
