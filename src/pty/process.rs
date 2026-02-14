@@ -11,6 +11,7 @@ pub struct PtyProcess {
 }
 
 impl PtyProcess {
+    #[allow(dead_code)]
     pub fn spawn(command: &str, cols: u16, rows: u16) -> Result<Self> {
         Self::spawn_with_env(command, cols, rows, HashMap::new())
     }
@@ -94,6 +95,7 @@ impl PtyProcess {
             .context("Failed to resize PTY")
     }
 
+    #[allow(dead_code)]
     pub fn is_alive(&mut self) -> bool {
         self.child
             .try_wait()

@@ -40,6 +40,7 @@ pub struct ThemeColors {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Theme {
     pub name: String,
     pub background: Color,
