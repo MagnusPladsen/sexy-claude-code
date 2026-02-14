@@ -1,6 +1,7 @@
 pub mod borders;
 pub mod claude_pane;
 pub mod header;
+pub mod overlay;
 pub mod input;
 pub mod status_bar;
 
