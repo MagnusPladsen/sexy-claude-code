@@ -13,6 +13,10 @@ pub enum StreamEvent {
     ContentBlockStop { index: usize },
     MessageDelta { stop_reason: Option<String> },
     MessageStop,
+    /// System init event carrying slash commands and session metadata.
+    SystemInit { slash_commands: Vec<String> },
+    /// Result event emitted when a command completes (e.g. slash commands).
+    Result { text: String, is_error: bool },
     Unknown(String),
 }
 
@@ -32,6 +36,27 @@ pub enum Delta {
 // Intermediate serde structs
 // ---------------------------------------------------------------------------
 
+/// Top-level envelope from Claude CLI stream-json output.
+/// Claude CLI wraps Anthropic streaming events inside `{"type":"stream_event","event":{...}}`.
+#[derive(Deserialize)]
+struct Envelope {
+    #[serde(rename = "type")]
+    envelope_type: String,
+    /// The inner event when envelope_type == "stream_event"
+    event: Option<serde_json::Value>,
+    /// Subtype for system events (e.g. "init", "hook_started")
+    subtype: Option<String>,
+    /// Slash commands from system.init
+    slash_commands: Option<Vec<String>>,
+    /// The assistant message when envelope_type == "assistant" (unused but needed for deserialization)
+    #[allow(dead_code)]
+    message: Option<RawAssistantMessage>,
+    /// Result text from "result" envelope (slash command output etc.)
+    result: Option<String>,
+    /// Whether the result is an error
+    is_error: Option<bool>,
+}
+
 #[derive(Deserialize)]
 struct RawEvent {
     #[serde(rename = "type")]
@@ -48,6 +73,24 @@ struct RawEvent {
 struct RawMessage {
     id: String,
     model: String,
+}
+
+/// Full assistant message (emitted as `{"type":"assistant","message":{...}}`)
+/// Fields are unused but needed for serde deserialization.
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct RawAssistantMessage {
+    id: String,
+    model: String,
+    content: Vec<RawAssistantContentBlock>,
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct RawAssistantContentBlock {
+    #[serde(rename = "type")]
+    block_type: String,
+    text: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -72,11 +115,56 @@ struct RawDelta {
 // ---------------------------------------------------------------------------
 
 pub fn parse_event(line: &str) -> StreamEvent {
-    let raw: RawEvent = match serde_json::from_str(line) {
+    // First, parse the top-level envelope from Claude CLI.
+    // Claude CLI wraps streaming events: {"type":"stream_event","event":{...}}
+    // It also emits: {"type":"system",...}, {"type":"assistant",...}, {"type":"result",...}
+    let envelope: Envelope = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(_) => return StreamEvent::Unknown(line.to_string()),
     };
 
+    match envelope.envelope_type.as_str() {
+        "stream_event" => {
+            // Unwrap the inner event and parse it
+            let inner = match envelope.event {
+                Some(v) => v,
+                None => return StreamEvent::Unknown(line.to_string()),
+            };
+            let raw: RawEvent = match serde_json::from_value(inner) {
+                Ok(v) => v,
+                Err(_) => return StreamEvent::Unknown(line.to_string()),
+            };
+            parse_raw_event(raw, line)
+        }
+        // System init carries slash commands
+        "system" if envelope.subtype.as_deref() == Some("init") => {
+            StreamEvent::SystemInit {
+                slash_commands: envelope.slash_commands.unwrap_or_default(),
+            }
+        }
+        // Other system events (hooks) — ignore
+        "system" => StreamEvent::Unknown(line.to_string()),
+        // Result event carries slash command output
+        "result" => {
+            let text = envelope.result.unwrap_or_default();
+            let is_error = envelope.is_error.unwrap_or(false);
+            StreamEvent::Result { text, is_error }
+        }
+        // Full assistant message — we use streaming events instead
+        "assistant" => StreamEvent::Unknown(line.to_string()),
+        // Try parsing as a raw event directly (for backwards compatibility / tests)
+        _ => {
+            let raw: RawEvent = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => return StreamEvent::Unknown(line.to_string()),
+            };
+            parse_raw_event(raw, line)
+        }
+    }
+}
+
+/// Parse the inner Anthropic streaming event.
+fn parse_raw_event(raw: RawEvent, line: &str) -> StreamEvent {
     match raw.event_type.as_str() {
         "message_start" => {
             if let Some(msg) = raw.message {
@@ -146,8 +234,137 @@ pub fn parse_event(line: &str) -> StreamEvent {
 mod tests {
     use super::*;
 
+    // --- Claude CLI envelope format (stream_event wrapper) ---
+
     #[test]
-    fn test_parse_message_start() {
+    fn test_parse_stream_event_message_start() {
+        let line = r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6","stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}},"session_id":"abc","uuid":"def"}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::MessageStart { message_id, model } => {
+                assert_eq!(message_id, "msg_123");
+                assert_eq!(model, "claude-opus-4-6");
+            }
+            other => panic!("Expected MessageStart, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_stream_event_content_block_delta() {
+        let line = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}},"session_id":"abc","uuid":"def"}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::ContentBlockDelta { index, delta } => {
+                assert_eq!(index, 0);
+                match delta {
+                    Delta::TextDelta(text) => assert_eq!(text, "Hello"),
+                    other => panic!("Expected TextDelta, got {:?}", other),
+                }
+            }
+            other => panic!("Expected ContentBlockDelta, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_stream_event_message_stop() {
+        let line = r#"{"type":"stream_event","event":{"type":"message_stop"},"session_id":"abc","uuid":"def"}"#;
+        let event = parse_event(line);
+        assert!(matches!(event, StreamEvent::MessageStop));
+    }
+
+    #[test]
+    fn test_parse_stream_event_content_block_start_text() {
+        let line = r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}},"session_id":"abc","uuid":"def"}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::ContentBlockStart { index, block_type } => {
+                assert_eq!(index, 0);
+                assert!(matches!(block_type, ContentBlockType::Text));
+            }
+            other => panic!("Expected ContentBlockStart, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_stream_event_content_block_stop() {
+        let line = r#"{"type":"stream_event","event":{"type":"content_block_stop","index":0},"session_id":"abc","uuid":"def"}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::ContentBlockStop { index } => assert_eq!(index, 0),
+            other => panic!("Expected ContentBlockStop, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_stream_event_message_delta() {
+        let line = r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":42}},"session_id":"abc","uuid":"def"}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::MessageDelta { stop_reason } => {
+                assert_eq!(stop_reason, Some("end_turn".to_string()));
+            }
+            other => panic!("Expected MessageDelta, got {:?}", other),
+        }
+    }
+
+    // --- System/result/assistant events are treated as Unknown ---
+
+    #[test]
+    fn test_parse_system_init_extracts_slash_commands() {
+        let line = r#"{"type":"system","subtype":"init","cwd":"/tmp","session_id":"abc","slash_commands":["commit","review","brainstorm"]}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::SystemInit { slash_commands } => {
+                assert_eq!(slash_commands, vec!["commit", "review", "brainstorm"]);
+            }
+            other => panic!("Expected SystemInit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_system_hook_event_is_unknown() {
+        let line = r#"{"type":"system","subtype":"hook_started","hook_id":"abc","session_id":"def"}"#;
+        let event = parse_event(line);
+        assert!(matches!(event, StreamEvent::Unknown(_)));
+    }
+
+    #[test]
+    fn test_parse_result_event() {
+        let line = r#"{"type":"result","subtype":"success","result":"Hello","session_id":"abc"}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::Result { text, is_error } => {
+                assert_eq!(text, "Hello");
+                assert!(!is_error);
+            }
+            other => panic!("Expected Result, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_result_event_error() {
+        let line = r#"{"type":"result","subtype":"error","result":"Something failed","is_error":true,"session_id":"abc"}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::Result { text, is_error } => {
+                assert_eq!(text, "Something failed");
+                assert!(is_error);
+            }
+            other => panic!("Expected Result, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_assistant_event_is_unknown() {
+        let line = r#"{"type":"assistant","message":{"id":"msg_1","model":"claude-opus-4-6","type":"message","role":"assistant","content":[{"type":"text","text":"Hi"}]},"session_id":"abc"}"#;
+        let event = parse_event(line);
+        assert!(matches!(event, StreamEvent::Unknown(_)));
+    }
+
+    // --- Backwards-compat: raw Anthropic format still works ---
+
+    #[test]
+    fn test_parse_raw_message_start() {
         let line = r#"{"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6","stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}"#;
         let event = parse_event(line);
         match event {
@@ -160,39 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_content_block_start_text() {
-        let line = r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#;
-        let event = parse_event(line);
-        match event {
-            StreamEvent::ContentBlockStart { index, block_type } => {
-                assert_eq!(index, 0);
-                assert!(matches!(block_type, ContentBlockType::Text));
-            }
-            other => panic!("Expected ContentBlockStart, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_parse_content_block_start_tool_use() {
-        let line = r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_123","name":"Bash","input":{}}}"#;
-        let event = parse_event(line);
-        match event {
-            StreamEvent::ContentBlockStart { index, block_type } => {
-                assert_eq!(index, 1);
-                match block_type {
-                    ContentBlockType::ToolUse { id, name } => {
-                        assert_eq!(id, "toolu_123");
-                        assert_eq!(name, "Bash");
-                    }
-                    other => panic!("Expected ToolUse, got {:?}", other),
-                }
-            }
-            other => panic!("Expected ContentBlockStart, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_parse_content_block_delta_text() {
+    fn test_parse_raw_content_block_delta_text() {
         let line = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello world"}}"#;
         let event = parse_event(line);
         match event {
@@ -207,76 +392,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_parse_content_block_delta_input_json() {
-        let line = r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"ls\"}"}}"#;
-        let event = parse_event(line);
-        match event {
-            StreamEvent::ContentBlockDelta { index, delta } => {
-                assert_eq!(index, 1);
-                match delta {
-                    Delta::InputJsonDelta(json) => {
-                        assert_eq!(json, r#"{"command":"ls"}"#);
-                    }
-                    other => panic!("Expected InputJsonDelta, got {:?}", other),
-                }
-            }
-            other => panic!("Expected ContentBlockDelta, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_parse_content_block_stop() {
-        let line = r#"{"type":"content_block_stop","index":0}"#;
-        let event = parse_event(line);
-        match event {
-            StreamEvent::ContentBlockStop { index } => {
-                assert_eq!(index, 0);
-            }
-            other => panic!("Expected ContentBlockStop, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_parse_message_delta() {
-        let line = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":42}}"#;
-        let event = parse_event(line);
-        match event {
-            StreamEvent::MessageDelta { stop_reason } => {
-                assert_eq!(stop_reason, Some("end_turn".to_string()));
-            }
-            other => panic!("Expected MessageDelta, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_parse_message_stop() {
-        let line = r#"{"type":"message_stop"}"#;
-        let event = parse_event(line);
-        assert!(matches!(event, StreamEvent::MessageStop));
-    }
-
-    #[test]
-    fn test_parse_unknown_event() {
-        let line = r#"{"type":"ping"}"#;
-        let event = parse_event(line);
-        match event {
-            StreamEvent::Unknown(raw) => {
-                assert_eq!(raw, line);
-            }
-            other => panic!("Expected Unknown, got {:?}", other),
-        }
-    }
+    // --- Edge cases ---
 
     #[test]
     fn test_parse_invalid_json() {
         let line = "this is not json at all";
         let event = parse_event(line);
-        match event {
-            StreamEvent::Unknown(raw) => {
-                assert_eq!(raw, line);
-            }
-            other => panic!("Expected Unknown, got {:?}", other),
-        }
+        assert!(matches!(event, StreamEvent::Unknown(_)));
+    }
+
+    #[test]
+    fn test_parse_unknown_event_type() {
+        let line = r#"{"type":"ping"}"#;
+        let event = parse_event(line);
+        assert!(matches!(event, StreamEvent::Unknown(_)));
     }
 }

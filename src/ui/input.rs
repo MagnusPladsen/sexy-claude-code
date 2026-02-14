@@ -95,6 +95,12 @@ impl InputEditor {
         content
     }
 
+    /// Replace the entire content and move cursor to end.
+    pub fn set_content(&mut self, text: &str) {
+        self.content = text.to_string();
+        self.cursor = self.content.len();
+    }
+
     pub fn is_empty(&self) -> bool {
         self.content.is_empty()
     }

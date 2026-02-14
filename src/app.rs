@@ -22,10 +22,49 @@ enum Msg {
     Tick,
 }
 
+/// Actions for commands handled locally (not sent to Claude).
+enum LocalAction {
+    Clear,
+}
+
 enum AppMode {
     Normal,
     ActionMenu(OverlayState),
     ThemePicker(OverlayState),
+}
+
+/// Tracks slash command completion state.
+pub struct CompletionState {
+    pub matches: Vec<String>,
+    pub selected: usize,
+}
+
+impl CompletionState {
+    fn new(matches: Vec<String>) -> Self {
+        Self {
+            matches,
+            selected: 0,
+        }
+    }
+
+    fn move_up(&mut self) {
+        if !self.matches.is_empty() {
+            self.selected = self
+                .selected
+                .checked_sub(1)
+                .unwrap_or(self.matches.len() - 1);
+        }
+    }
+
+    fn move_down(&mut self) {
+        if !self.matches.is_empty() {
+            self.selected = (self.selected + 1) % self.matches.len();
+        }
+    }
+
+    fn selected_command(&self) -> Option<&str> {
+        self.matches.get(self.selected).map(|s| s.as_str())
+    }
 }
 
 pub struct App {
@@ -41,6 +80,8 @@ pub struct App {
     scroll_offset: usize,
     auto_scroll: bool,
     command: String,
+    slash_commands: Vec<String>,
+    completion: Option<CompletionState>,
 }
 
 impl App {
@@ -58,6 +99,8 @@ impl App {
             scroll_offset: 0,
             auto_scroll: true,
             command,
+            slash_commands: Vec::new(),
+            completion: None,
         }
     }
 
@@ -121,6 +164,10 @@ impl App {
     async fn update(&mut self, msg: Msg) -> Result<()> {
         match msg {
             Msg::ClaudeEvent(event) => {
+                // Extract slash commands from SystemInit before passing to conversation
+                if let StreamEvent::SystemInit { ref slash_commands } = event {
+                    self.slash_commands = slash_commands.clone();
+                }
                 self.conversation.apply_event(&event);
                 if self.auto_scroll {
                     self.scroll_to_bottom();
@@ -188,16 +235,72 @@ impl App {
             _ => {}
         }
 
+        // Completion navigation (when popup is visible)
+        if self.completion.is_some() {
+            match key.code {
+                KeyCode::Tab | KeyCode::Enter if !shift => {
+                    // Accept selected completion
+                    if let Some(ref state) = self.completion {
+                        if let Some(cmd) = state.selected_command() {
+                            let full = format!("/{cmd}");
+                            self.input.set_content(&full);
+                        }
+                    }
+                    self.completion = None;
+                    return Ok(());
+                }
+                KeyCode::Esc => {
+                    self.completion = None;
+                    return Ok(());
+                }
+                KeyCode::Up => {
+                    if let Some(ref mut state) = self.completion {
+                        state.move_up();
+                    }
+                    return Ok(());
+                }
+                KeyCode::Down => {
+                    if let Some(ref mut state) = self.completion {
+                        state.move_down();
+                    }
+                    return Ok(());
+                }
+                _ => {
+                    // Fall through to normal input handling, then update completions
+                }
+            }
+        }
+
         // Input handling
         match key.code {
             KeyCode::Enter if !shift => {
                 if !self.input.is_empty() && !self.conversation.is_streaming() {
                     let text = self.input.take_content();
-                    self.conversation.push_user_message(text.clone());
-                    self.auto_scroll = true;
-                    self.scroll_to_bottom();
-                    if let Some(ref mut claude) = self.claude {
-                        claude.send_message(&text).await?;
+
+                    if let Some(action) = self.handle_local_command(&text) {
+                        // Command handled locally
+                        match action {
+                            LocalAction::Clear => {
+                                self.conversation = Conversation::new();
+                                self.scroll_offset = 0;
+                                self.auto_scroll = true;
+                            }
+                        }
+                    } else if text.starts_with('/') {
+                        // Slash command — send to Claude but don't add as user message
+                        self.auto_scroll = true;
+                        self.scroll_to_bottom();
+                        if let Some(ref mut claude) = self.claude {
+                            claude.send_message(&text).await?;
+                        }
+                    } else {
+                        // Normal user message
+                        self.conversation.push_user_message(text.clone());
+                        self.auto_scroll = true;
+                        self.scroll_to_bottom();
+                        if let Some(ref mut claude) = self.claude {
+                            claude.send_message(&text).await?;
+                        }
                     }
                 }
             }
@@ -227,6 +330,9 @@ impl App {
             }
             _ => {}
         }
+
+        // Update slash command completions based on current input
+        self.update_completions();
 
         Ok(())
     }
@@ -274,12 +380,52 @@ impl App {
         Ok(())
     }
 
+    /// Update slash command completions based on current input text.
+    fn update_completions(&mut self) {
+        let content = self.input.content();
+        if !content.starts_with('/') || content.contains(' ') || content.contains('\n') {
+            self.completion = None;
+            return;
+        }
+
+        let prefix = &content[1..]; // strip the leading '/'
+        let matches: Vec<String> = self
+            .slash_commands
+            .iter()
+            .filter(|cmd| cmd.starts_with(prefix))
+            .cloned()
+            .collect();
+
+        if matches.is_empty() {
+            self.completion = None;
+        } else {
+            // Preserve selection index if possible
+            let prev_selected = self
+                .completion
+                .as_ref()
+                .map(|s| s.selected)
+                .unwrap_or(0);
+            let mut state = CompletionState::new(matches);
+            state.selected = prev_selected.min(state.matches.len().saturating_sub(1));
+            self.completion = Some(state);
+        }
+    }
+
+    /// Check if the input is a command that should be handled locally.
+    fn handle_local_command(&self, text: &str) -> Option<LocalAction> {
+        let trimmed = text.trim();
+        match trimmed {
+            "/clear" => Some(LocalAction::Clear),
+            _ => None,
+        }
+    }
+
     fn scroll_to_bottom(&mut self) {
         self.scroll_offset = usize::MAX;
     }
 
     fn clamp_scroll(&mut self) {
-        let total = ui::claude_pane::total_lines(&self.conversation, 80);
+        let total = ui::claude_pane::total_lines(&self.conversation, 80, &self.theme);
         let max_scroll = total.saturating_sub(10);
         if self.scroll_offset >= max_scroll {
             self.scroll_offset = max_scroll;
@@ -392,6 +538,7 @@ impl App {
         let total_conv_lines = ui::claude_pane::total_lines(
             &self.conversation,
             term_size.width.saturating_sub(4) as usize,
+            &self.theme,
         );
         if self.auto_scroll || self.scroll_offset > total_conv_lines {
             self.scroll_offset = total_conv_lines.saturating_sub(visible_height);
@@ -401,6 +548,7 @@ impl App {
         let input = &self.input;
         let scroll_offset = self.scroll_offset;
         let is_streaming = self.conversation.is_streaming();
+        let completion = self.completion.as_ref();
 
         terminal.draw(|frame| {
             ui::render(
@@ -411,6 +559,7 @@ impl App {
                 frame_count,
                 scroll_offset,
                 is_streaming,
+                completion,
             );
             if let Some((title, state)) = overlay {
                 ui::render_overlay(frame, title, state, theme);

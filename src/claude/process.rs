@@ -19,7 +19,16 @@ impl ClaudeProcess {
 
         let mut cmd = Command::new(program);
         cmd.args(args);
-        cmd.args(["-p", "--output-format", "stream-json", "--input-format", "stream-json"]);
+        cmd.args([
+            "-p",
+            "--output-format", "stream-json",
+            "--input-format", "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+        ]);
+        // Prevent "cannot run inside another Claude Code session" error
+        cmd.env_remove("CLAUDECODE");
+        cmd.env_remove("CLAUDE_CODE_ENTRYPOINT");
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -49,8 +58,11 @@ impl ClaudeProcess {
     /// Send a user message as a stream-json input event.
     pub async fn send_message(&mut self, text: &str) -> Result<()> {
         let event = serde_json::json!({
-            "type": "user_input",
-            "content": text,
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": text,
+            },
         });
         let mut line = serde_json::to_string(&event)?;
         line.push('\n');
