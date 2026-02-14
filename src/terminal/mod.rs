@@ -25,10 +25,12 @@ impl TerminalEmulator {
         self.parser.set_size(rows, cols);
     }
 
+    #[allow(dead_code)]
     pub fn rows(&self) -> u16 {
         self.parser.screen().size().0
     }
 
+    #[allow(dead_code)]
     pub fn cols(&self) -> u16 {
         self.parser.screen().size().1
     }
