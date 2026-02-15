@@ -10,6 +10,7 @@ use crate::claude::commands::{self, CustomCommand};
 use crate::claude::conversation::Conversation;
 use crate::claude::events::StreamEvent;
 use crate::claude::process::ClaudeProcess;
+use crate::claude::sessions;
 use crate::config::Config;
 use crate::theme::Theme;
 use crate::ui;
@@ -35,6 +36,7 @@ enum AppMode {
     Normal,
     ActionMenu(OverlayState),
     ThemePicker(OverlayState),
+    SessionPicker(OverlayState),
 }
 
 /// A single item in the slash command completion popup.
@@ -98,6 +100,10 @@ pub struct App {
     pending_slash_command: Option<String>,
     /// Brief notification shown after a slash command completes with no output.
     toast: Option<Toast>,
+    /// Current session ID from Claude CLI system.init event.
+    session_id: Option<String>,
+    /// Main event sender, stored so we can forward events from resumed processes.
+    event_tx: Option<mpsc::UnboundedSender<Msg>>,
 }
 
 impl App {
@@ -120,26 +126,19 @@ impl App {
             completion: None,
             pending_slash_command: None,
             toast: None,
+            session_id: None,
+            event_tx: None,
         }
     }
 
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
+        self.event_tx = Some(tx.clone());
 
         // Spawn Claude process
-        let (claude_process, mut event_rx) = ClaudeProcess::spawn(&self.command)?;
+        let (claude_process, event_rx) = ClaudeProcess::spawn(&self.command)?;
         self.claude = Some(claude_process);
-
-        // Forward Claude events to the main channel
-        let tx_claude = tx.clone();
-        tokio::spawn(async move {
-            while let Some(event) = event_rx.recv().await {
-                if tx_claude.send(Msg::ClaudeEvent(event)).is_err() {
-                    break;
-                }
-            }
-            let _ = tx_claude.send(Msg::ClaudeExited);
-        });
+        Self::forward_claude_events(event_rx, tx.clone());
 
         // Spawn crossterm event reader task
         let tx_event = tx.clone();
@@ -180,12 +179,62 @@ impl App {
         Ok(())
     }
 
+    /// Forward Claude events from a process receiver to the main event channel.
+    fn forward_claude_events(
+        mut event_rx: mpsc::UnboundedReceiver<StreamEvent>,
+        tx: mpsc::UnboundedSender<Msg>,
+    ) {
+        tokio::spawn(async move {
+            while let Some(event) = event_rx.recv().await {
+                if tx.send(Msg::ClaudeEvent(event)).is_err() {
+                    break;
+                }
+            }
+            let _ = tx.send(Msg::ClaudeExited);
+        });
+    }
+
+    /// Resume a session: kill current process, reset state, spawn with --resume.
+    async fn resume_session(&mut self, session_id: &str) -> Result<()> {
+        // Kill the current process
+        if let Some(ref mut claude) = self.claude {
+            let _ = claude.kill().await;
+        }
+        self.claude = None;
+
+        // Reset conversation state
+        self.conversation = Conversation::new();
+        self.scroll_offset = 0;
+        self.auto_scroll = true;
+        self.slash_commands.clear();
+        self.session_id = None;
+
+        // Spawn new process with --resume
+        let (claude_process, event_rx) =
+            ClaudeProcess::spawn_with_resume(&self.command, session_id)?;
+        self.claude = Some(claude_process);
+
+        // Forward events from the new process
+        if let Some(ref tx) = self.event_tx {
+            Self::forward_claude_events(event_rx, tx.clone());
+        }
+
+        self.toast = Some(Toast::new("Resuming session...".to_string()));
+
+        Ok(())
+    }
+
     async fn update(&mut self, msg: Msg) -> Result<()> {
         match msg {
             Msg::ClaudeEvent(event) => {
-                // Extract slash commands from SystemInit before passing to conversation
-                if let StreamEvent::SystemInit { ref slash_commands } = event {
+                // Extract slash commands and session ID from SystemInit
+                if let StreamEvent::SystemInit {
+                    ref slash_commands,
+                    ref session_id,
+                } = event
+                {
                     self.slash_commands = slash_commands.clone();
+                    self.session_id = session_id.clone();
                 }
 
                 // Show toast for empty slash command results, clear tracking
@@ -236,7 +285,9 @@ impl App {
     async fn handle_key(&mut self, key: event::KeyEvent) -> Result<()> {
         match &self.mode {
             AppMode::Normal => self.handle_key_normal(key).await,
-            AppMode::ActionMenu(_) | AppMode::ThemePicker(_) => self.handle_key_overlay(key),
+            AppMode::ActionMenu(_)
+            | AppMode::ThemePicker(_)
+            | AppMode::SessionPicker(_) => self.handle_key_overlay(key).await,
         }
     }
 
@@ -256,6 +307,11 @@ impl App {
 
         if ctrl && key.code == KeyCode::Char('t') {
             self.open_theme_picker();
+            return Ok(());
+        }
+
+        if ctrl && key.code == KeyCode::Char('r') {
+            self.open_session_picker();
             return Ok(());
         }
 
@@ -385,47 +441,41 @@ impl App {
         Ok(())
     }
 
-    fn handle_key_overlay(&mut self, key: event::KeyEvent) -> Result<()> {
+    async fn handle_key_overlay(&mut self, key: event::KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Esc => {
                 self.close_overlay();
             }
             KeyCode::Enter => {
-                self.confirm_overlay()?;
+                self.confirm_overlay().await?;
             }
             KeyCode::Up => {
-                if let AppMode::ActionMenu(ref mut state) | AppMode::ThemePicker(ref mut state) =
-                    self.mode
-                {
-                    state.move_up();
-                }
+                self.overlay_state_mut(|s| s.move_up());
                 self.preview_theme();
             }
             KeyCode::Down => {
-                if let AppMode::ActionMenu(ref mut state) | AppMode::ThemePicker(ref mut state) =
-                    self.mode
-                {
-                    state.move_down();
-                }
+                self.overlay_state_mut(|s| s.move_down());
                 self.preview_theme();
             }
             KeyCode::Backspace => {
-                if let AppMode::ActionMenu(ref mut state) | AppMode::ThemePicker(ref mut state) =
-                    self.mode
-                {
-                    state.backspace();
-                }
+                self.overlay_state_mut(|s| s.backspace());
             }
             KeyCode::Char(c) => {
-                if let AppMode::ActionMenu(ref mut state) | AppMode::ThemePicker(ref mut state) =
-                    self.mode
-                {
-                    state.type_char(c);
-                }
+                self.overlay_state_mut(|s| s.type_char(c));
             }
             _ => {}
         }
         Ok(())
+    }
+
+    /// Apply a mutation to the current overlay state (if any).
+    fn overlay_state_mut(&mut self, f: impl FnOnce(&mut OverlayState)) {
+        match self.mode {
+            AppMode::ActionMenu(ref mut state)
+            | AppMode::ThemePicker(ref mut state)
+            | AppMode::SessionPicker(ref mut state) => f(state),
+            AppMode::Normal => {}
+        }
     }
 
     /// Build a unified list of completion items from slash commands and custom commands.
@@ -574,6 +624,11 @@ impl App {
     fn open_action_menu(&mut self) {
         let items = vec![
             OverlayItem {
+                label: "Resume Session".to_string(),
+                value: "resume".to_string(),
+                hint: "Ctrl+R".to_string(),
+            },
+            OverlayItem {
                 label: "Switch Theme".to_string(),
                 value: "theme".to_string(),
                 hint: "Ctrl+T".to_string(),
@@ -585,6 +640,33 @@ impl App {
             },
         ];
         self.mode = AppMode::ActionMenu(OverlayState::new(items, None));
+    }
+
+    fn open_session_picker(&mut self) {
+        let all_sessions = sessions::discover_sessions();
+        let items: Vec<OverlayItem> = all_sessions
+            .into_iter()
+            .take(50)
+            .map(|s| {
+                let label = if s.preview.is_empty() {
+                    format!("{} ({})", s.project_path, s.age_string())
+                } else {
+                    format!("{} — {}", s.age_string(), s.preview)
+                };
+                OverlayItem {
+                    label,
+                    value: s.session_id,
+                    hint: s.project_path,
+                }
+            })
+            .collect();
+
+        if items.is_empty() {
+            self.toast = Some(Toast::new("No sessions found".to_string()));
+            return;
+        }
+
+        self.mode = AppMode::SessionPicker(OverlayState::new(items, None));
     }
 
     fn preview_theme(&mut self) {
@@ -608,7 +690,7 @@ impl App {
         self.mode = AppMode::Normal;
     }
 
-    fn confirm_overlay(&mut self) -> Result<()> {
+    async fn confirm_overlay(&mut self) -> Result<()> {
         let mode = std::mem::replace(&mut self.mode, AppMode::Normal);
 
         match mode {
@@ -625,10 +707,16 @@ impl App {
             AppMode::ActionMenu(state) => {
                 if let Some(value) = state.selected_value() {
                     match value.as_str() {
+                        "resume" => self.open_session_picker(),
                         "theme" => self.open_theme_picker(),
                         "quit" => self.should_quit = true,
                         _ => {}
                     }
+                }
+            }
+            AppMode::SessionPicker(state) => {
+                if let Some(session_id) = state.selected_value() {
+                    self.resume_session(&session_id).await?;
                 }
             }
             AppMode::Normal => {}
@@ -642,6 +730,7 @@ impl App {
         let overlay = match &self.mode {
             AppMode::ActionMenu(state) => Some(("Actions", state)),
             AppMode::ThemePicker(state) => Some(("Select Theme", state)),
+            AppMode::SessionPicker(state) => Some(("Resume Session", state)),
             AppMode::Normal => None,
         };
 

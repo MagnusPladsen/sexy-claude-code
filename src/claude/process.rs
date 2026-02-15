@@ -14,6 +14,21 @@ impl ClaudeProcess {
     /// Spawn claude in print mode with stream-json I/O.
     /// Returns the process handle and a receiver for parsed events.
     pub fn spawn(command: &str) -> Result<(Self, mpsc::UnboundedReceiver<StreamEvent>)> {
+        Self::spawn_inner(command, None)
+    }
+
+    /// Spawn claude resuming an existing session.
+    pub fn spawn_with_resume(
+        command: &str,
+        session_id: &str,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<StreamEvent>)> {
+        Self::spawn_inner(command, Some(session_id))
+    }
+
+    fn spawn_inner(
+        command: &str,
+        resume_session_id: Option<&str>,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<StreamEvent>)> {
         let parts: Vec<&str> = command.split_whitespace().collect();
         let (program, args) = parts.split_first().context("Empty command")?;
 
@@ -26,6 +41,9 @@ impl ClaudeProcess {
             "--verbose",
             "--include-partial-messages",
         ]);
+        if let Some(session_id) = resume_session_id {
+            cmd.args(["--resume", session_id]);
+        }
         // Prevent "cannot run inside another Claude Code session" error
         cmd.env_remove("CLAUDECODE");
         cmd.env_remove("CLAUDE_CODE_ENTRYPOINT");
