@@ -31,7 +31,12 @@ pub enum StreamEvent {
         hook_id: Option<String>,
     },
     /// Result event emitted when a command completes (e.g. slash commands).
-    Result { text: String, is_error: bool },
+    Result {
+        text: String,
+        is_error: bool,
+        /// Tools that were denied permission during the session.
+        permission_denials: Vec<PermissionDenial>,
+    },
     /// Tool result from a `{"type":"user"}` envelope after tool execution.
     ToolResult {
         tool_use_id: String,
@@ -39,6 +44,15 @@ pub enum StreamEvent {
         is_error: bool,
     },
     Unknown(String),
+}
+
+/// A tool that was denied permission during the session.
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct PermissionDenial {
+    pub tool_name: String,
+    #[serde(default)]
+    pub tool_use_id: String,
 }
 
 /// Token usage data from message events.
@@ -95,6 +109,8 @@ struct Envelope {
     is_error: Option<bool>,
     /// Structured tool result metadata (e.g. file content, line counts).
     tool_use_result: Option<serde_json::Value>,
+    /// Tools that were denied permission (in result events).
+    permission_denials: Option<Vec<PermissionDenial>>,
 }
 
 #[derive(Deserialize)]
@@ -192,7 +208,8 @@ pub fn parse_event(line: &str) -> StreamEvent {
         "result" => {
             let text = envelope.result.unwrap_or_default();
             let is_error = envelope.is_error.unwrap_or(false);
-            StreamEvent::Result { text, is_error }
+            let permission_denials = envelope.permission_denials.unwrap_or_default();
+            StreamEvent::Result { text, is_error, permission_denials }
         }
         // Tool result from tool execution — emitted as {"type":"user","message":{...}}
         "user" => parse_tool_result(&envelope, line),
@@ -488,7 +505,7 @@ mod tests {
         let line = r#"{"type":"result","subtype":"success","result":"Hello","session_id":"abc"}"#;
         let event = parse_event(line);
         match event {
-            StreamEvent::Result { text, is_error } => {
+            StreamEvent::Result { text, is_error, .. } => {
                 assert_eq!(text, "Hello");
                 assert!(!is_error);
             }
@@ -501,9 +518,22 @@ mod tests {
         let line = r#"{"type":"result","subtype":"error","result":"Something failed","is_error":true,"session_id":"abc"}"#;
         let event = parse_event(line);
         match event {
-            StreamEvent::Result { text, is_error } => {
+            StreamEvent::Result { text, is_error, .. } => {
                 assert_eq!(text, "Something failed");
                 assert!(is_error);
+            }
+            other => panic!("Expected Result, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_result_with_permission_denials() {
+        let line = r#"{"type":"result","subtype":"success","result":"done","permission_denials":[{"tool_name":"Bash","tool_use_id":"toolu_123","tool_input":{"command":"rm -rf /"}}],"session_id":"abc"}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::Result { permission_denials, .. } => {
+                assert_eq!(permission_denials.len(), 1);
+                assert_eq!(permission_denials[0].tool_name, "Bash");
             }
             other => panic!("Expected Result, got {:?}", other),
         }

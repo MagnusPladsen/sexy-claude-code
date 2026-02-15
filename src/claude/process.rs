@@ -20,6 +20,10 @@ pub struct SpawnOptions {
     pub max_budget_usd: Option<f64>,
     /// Path to MCP server config file.
     pub mcp_config: Option<String>,
+    /// Permission mode ("default", "plan", "bypassPermissions").
+    pub permission_mode: Option<String>,
+    /// Tools to auto-allow without prompting.
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 pub struct ClaudeProcess {
@@ -95,6 +99,14 @@ impl ClaudeProcess {
         }
         if let Some(ref mcp_config) = options.mcp_config {
             cmd.args(["--mcp-config", mcp_config]);
+        }
+        if let Some(ref mode) = options.permission_mode {
+            cmd.args(["--permission-mode", mode]);
+        }
+        if let Some(ref tools) = options.allowed_tools {
+            for tool in tools {
+                cmd.args(["--allowedTools", tool]);
+            }
         }
         // Prevent "cannot run inside another Claude Code session" error
         cmd.env_remove("CLAUDECODE");
