@@ -14,7 +14,10 @@ pub enum StreamEvent {
     MessageDelta { stop_reason: Option<String> },
     MessageStop,
     /// System init event carrying slash commands and session metadata.
-    SystemInit { slash_commands: Vec<String> },
+    SystemInit {
+        slash_commands: Vec<String>,
+        session_id: Option<String>,
+    },
     /// Result event emitted when a command completes (e.g. slash commands).
     Result { text: String, is_error: bool },
     Unknown(String),
@@ -48,6 +51,8 @@ struct Envelope {
     subtype: Option<String>,
     /// Slash commands from system.init
     slash_commands: Option<Vec<String>>,
+    /// Session ID from system.init
+    session_id: Option<String>,
     /// The assistant message when envelope_type == "assistant" (unused but needed for deserialization)
     #[allow(dead_code)]
     message: Option<RawAssistantMessage>,
@@ -136,10 +141,11 @@ pub fn parse_event(line: &str) -> StreamEvent {
             };
             parse_raw_event(raw, line)
         }
-        // System init carries slash commands
+        // System init carries slash commands and session ID
         "system" if envelope.subtype.as_deref() == Some("init") => {
             StreamEvent::SystemInit {
                 slash_commands: envelope.slash_commands.unwrap_or_default(),
+                session_id: envelope.session_id,
             }
         }
         // Other system events (hooks) — ignore
@@ -311,11 +317,15 @@ mod tests {
 
     #[test]
     fn test_parse_system_init_extracts_slash_commands() {
-        let line = r#"{"type":"system","subtype":"init","cwd":"/tmp","session_id":"abc","slash_commands":["commit","review","brainstorm"]}"#;
+        let line = r#"{"type":"system","subtype":"init","cwd":"/tmp","session_id":"abc-123","slash_commands":["commit","review","brainstorm"]}"#;
         let event = parse_event(line);
         match event {
-            StreamEvent::SystemInit { slash_commands } => {
+            StreamEvent::SystemInit {
+                slash_commands,
+                session_id,
+            } => {
                 assert_eq!(slash_commands, vec!["commit", "review", "brainstorm"]);
+                assert_eq!(session_id, Some("abc-123".to_string()));
             }
             other => panic!("Expected SystemInit, got {:?}", other),
         }
