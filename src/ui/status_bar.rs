@@ -3,6 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Widget;
 
+use crate::cost;
 use crate::git::GitInfo;
 use crate::theme::Theme;
 
@@ -10,30 +11,30 @@ use crate::theme::Theme;
 const CONTEXT_WINDOW_TOKENS: u64 = 200_000;
 
 pub struct StatusBar<'a> {
-    theme_name: &'a str,
     theme: &'a Theme,
     input_tokens: u64,
     output_tokens: u64,
     git_info: &'a GitInfo,
     todo_summary: Option<&'a str>,
+    model_name: Option<&'a str>,
 }
 
 impl<'a> StatusBar<'a> {
     pub fn new(
-        theme_name: &'a str,
         theme: &'a Theme,
         input_tokens: u64,
         output_tokens: u64,
         git_info: &'a GitInfo,
         todo_summary: Option<&'a str>,
+        model_name: Option<&'a str>,
     ) -> Self {
         Self {
-            theme_name,
             theme,
             input_tokens,
             output_tokens,
             git_info,
             todo_summary,
+            model_name,
         }
     }
 }
@@ -119,21 +120,32 @@ impl<'a> Widget for StatusBar<'a> {
             write_str(buf, summary, left_end, area.y, area.right(), todo_style);
         }
 
-        // Center: theme name + token usage + context bar
+        // Center: model | tokens | cost | context bar
         let total_tokens = self.input_tokens + self.output_tokens;
         let has_usage = total_tokens > 0;
 
+        let short_model = self.model_name
+            .map(|m| cost::short_model_name(m))
+            .unwrap_or_default();
+
         let center_text = if has_usage {
+            let pricing = self.model_name
+                .map(|m| cost::pricing_for_model(m))
+                .unwrap_or_else(|| cost::pricing_for_model("sonnet"));
+            let session_cost = pricing.calculate_cost(self.input_tokens, self.output_tokens);
             let pct = ((total_tokens as f64 / CONTEXT_WINDOW_TOKENS as f64) * 100.0).min(100.0);
             format!(
-                " {} | {} in / {} out | {:.0}% ",
-                self.theme_name,
+                " {} | {} in / {} out | {} | {:.0}% ",
+                short_model,
                 format_tokens(self.input_tokens),
                 format_tokens(self.output_tokens),
+                cost::format_cost(session_cost),
                 pct,
             )
+        } else if !short_model.is_empty() {
+            format!(" {} ", short_model)
         } else {
-            format!(" {} ", self.theme_name)
+            String::new()
         };
 
         // Calculate bar width and center position
