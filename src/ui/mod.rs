@@ -37,6 +37,7 @@ pub fn render(
     is_streaming: bool,
     completion: Option<&CompletionState>,
     toast: Option<&Toast>,
+    token_usage: (u64, u64),
 ) {
     let size = frame.area();
 
@@ -81,7 +82,10 @@ pub fn render(
     }
 
     // Status bar
-    frame.render_widget(StatusBar::new(&theme.name, theme), chunks[3]);
+    frame.render_widget(
+        StatusBar::new(&theme.name, theme, token_usage.0, token_usage.1),
+        chunks[3],
+    );
 
     // Toast notification (floats above status bar)
     if let Some(t) = toast {

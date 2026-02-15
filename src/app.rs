@@ -104,6 +104,9 @@ pub struct App {
     session_id: Option<String>,
     /// Main event sender, stored so we can forward events from resumed processes.
     event_tx: Option<mpsc::UnboundedSender<Msg>>,
+    /// Cumulative token usage for this session.
+    total_input_tokens: u64,
+    total_output_tokens: u64,
 }
 
 impl App {
@@ -128,6 +131,8 @@ impl App {
             toast: None,
             session_id: None,
             event_tx: None,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
         }
     }
 
@@ -250,6 +255,22 @@ impl App {
                 // A streaming response clears the pending command
                 if matches!(event, StreamEvent::MessageStart { .. }) {
                     self.pending_slash_command = None;
+                }
+
+                // Accumulate token usage
+                match &event {
+                    StreamEvent::MessageStart {
+                        usage: Some(u), ..
+                    } => {
+                        self.total_input_tokens += u.input_tokens;
+                        self.total_output_tokens += u.output_tokens;
+                    }
+                    StreamEvent::MessageDelta {
+                        usage: Some(u), ..
+                    } => {
+                        self.total_output_tokens += u.output_tokens;
+                    }
+                    _ => {}
                 }
 
                 self.conversation.apply_event(&event);
@@ -752,6 +773,7 @@ impl App {
         let is_streaming = self.conversation.is_streaming();
         let completion = self.completion.as_ref();
         let toast = self.toast.as_ref();
+        let token_usage = (self.total_input_tokens, self.total_output_tokens);
 
         terminal.draw(|frame| {
             ui::render(
@@ -764,6 +786,7 @@ impl App {
                 is_streaming,
                 completion,
                 toast,
+                token_usage,
             );
             if let Some((title, state)) = overlay {
                 ui::render_overlay(frame, title, state, theme);
