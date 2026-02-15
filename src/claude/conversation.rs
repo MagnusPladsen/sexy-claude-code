@@ -45,6 +45,9 @@ pub struct Conversation {
     /// Set to true when a full streaming response completes (MessageStop).
     /// Used to suppress duplicate messages from the Result event that follows.
     had_streaming_response: bool,
+    /// True when tool execution is in progress (between MessageStop with
+    /// a ToolUse block and the arrival of a ToolResult or new MessageStart).
+    awaiting_tool_result: bool,
     /// Buffer that accumulates partial JSON chunks for tool_use input.
     tool_input_buf: String,
     /// Tracks the ContentBlockType for each block index in the current message,
@@ -59,6 +62,7 @@ impl Conversation {
             messages: Vec::new(),
             streaming: false,
             had_streaming_response: false,
+            awaiting_tool_result: false,
             tool_input_buf: String::new(),
             block_types: Vec::new(),
         }
@@ -90,6 +94,7 @@ impl Conversation {
                 });
                 self.streaming = true;
                 self.had_streaming_response = false;
+                self.awaiting_tool_result = false;
                 self.block_types.clear();
                 self.tool_input_buf.clear();
             }
@@ -164,6 +169,16 @@ impl Conversation {
             StreamEvent::MessageStop => {
                 self.streaming = false;
                 self.had_streaming_response = true;
+                // Check if the last content block is a ToolUse — if so,
+                // tool execution is about to happen.
+                let has_pending_tool = self
+                    .messages
+                    .last()
+                    .and_then(|m| m.content.last())
+                    .is_some_and(|b| matches!(b, ContentBlock::ToolUse { .. }));
+                if has_pending_tool {
+                    self.awaiting_tool_result = true;
+                }
             }
 
             StreamEvent::Result { ref text, .. } => {
@@ -185,6 +200,7 @@ impl Conversation {
                 content,
                 is_error,
             } => {
+                self.awaiting_tool_result = false;
                 // Append tool result to the last assistant message.
                 // The renderer matches it to its ToolUse by ID.
                 if let Some(msg) = self.messages.last_mut() {
@@ -209,6 +225,11 @@ impl Conversation {
     /// Whether the conversation is currently receiving a streamed response.
     pub fn is_streaming(&self) -> bool {
         self.streaming
+    }
+
+    /// Whether a tool is currently executing (between MessageStop and ToolResult).
+    pub fn is_awaiting_tool_result(&self) -> bool {
+        self.awaiting_tool_result
     }
 
     /// Returns the text of the last text block in the last assistant message.
@@ -572,5 +593,63 @@ mod tests {
             ContentBlock::Thinking(t) => assert_eq!(t, "Let me think about this."),
             other => panic!("Expected Thinking, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_awaiting_tool_result_lifecycle() {
+        let mut conv = Conversation::new();
+        assert!(!conv.is_awaiting_tool_result());
+
+        // Start message with a tool use
+        conv.apply_event(&StreamEvent::MessageStart {
+            message_id: "msg_001".to_string(),
+            model: "claude-opus-4-6".to_string(),
+            usage: None,
+        });
+        conv.apply_event(&StreamEvent::ContentBlockStart {
+            index: 0,
+            block_type: ContentBlockType::ToolUse {
+                id: "toolu_abc".to_string(),
+                name: "Bash".to_string(),
+            },
+        });
+        conv.apply_event(&StreamEvent::ContentBlockStop { index: 0 });
+
+        // MessageStop with a ToolUse as last block → awaiting
+        conv.apply_event(&StreamEvent::MessageStop);
+        assert!(conv.is_awaiting_tool_result());
+
+        // ToolResult clears awaiting state
+        conv.apply_event(&StreamEvent::ToolResult {
+            tool_use_id: "toolu_abc".to_string(),
+            content: "output".to_string(),
+            is_error: false,
+        });
+        assert!(!conv.is_awaiting_tool_result());
+    }
+
+    #[test]
+    fn test_message_stop_without_tool_use_not_awaiting() {
+        let mut conv = Conversation::new();
+
+        // Start message with text only
+        conv.apply_event(&StreamEvent::MessageStart {
+            message_id: "msg_001".to_string(),
+            model: "claude-opus-4-6".to_string(),
+            usage: None,
+        });
+        conv.apply_event(&StreamEvent::ContentBlockStart {
+            index: 0,
+            block_type: ContentBlockType::Text,
+        });
+        conv.apply_event(&StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: Delta::TextDelta("Hello".to_string()),
+        });
+        conv.apply_event(&StreamEvent::ContentBlockStop { index: 0 });
+        conv.apply_event(&StreamEvent::MessageStop);
+
+        // Text-only message → not awaiting tool result
+        assert!(!conv.is_awaiting_tool_result());
     }
 }
