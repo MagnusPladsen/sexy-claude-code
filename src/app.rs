@@ -869,8 +869,13 @@ impl App {
         self.mode = AppMode::ThemePicker(state);
     }
 
+    /// Check whether a given slash command is available from Claude CLI.
+    fn has_slash_command(&self, name: &str) -> bool {
+        self.slash_commands.iter().any(|c| c == name)
+    }
+
     fn open_action_menu(&mut self) {
-        let items = vec![
+        let mut items = vec![
             OverlayItem {
                 label: "Continue Last Session".to_string(),
                 value: "continue".to_string(),
@@ -879,34 +884,44 @@ impl App {
             OverlayItem {
                 label: "Resume Session".to_string(),
                 value: "resume".to_string(),
-                hint: "Ctrl+R".to_string(),
+                hint: String::new(),
             },
-            OverlayItem {
+        ];
+
+        // Only show commands that are actually available in stream-json mode
+        if self.has_slash_command("rename") {
+            items.push(OverlayItem {
                 label: "Rename Session".to_string(),
                 value: "rename".to_string(),
                 hint: String::new(),
-            },
-            OverlayItem {
+            });
+        }
+        if self.has_slash_command("compact") {
+            items.push(OverlayItem {
                 label: "Compact Context".to_string(),
                 value: "compact".to_string(),
                 hint: String::new(),
-            },
-            OverlayItem {
+            });
+        }
+        if self.has_slash_command("rewind") {
+            items.push(OverlayItem {
                 label: "Rewind to Checkpoint".to_string(),
                 value: "rewind".to_string(),
                 hint: String::new(),
-            },
-            OverlayItem {
-                label: "Switch Theme".to_string(),
-                value: "theme".to_string(),
-                hint: "Ctrl+T".to_string(),
-            },
-            OverlayItem {
-                label: "Quit".to_string(),
-                value: "quit".to_string(),
-                hint: "Ctrl+Q".to_string(),
-            },
-        ];
+            });
+        }
+
+        items.push(OverlayItem {
+            label: "Switch Theme".to_string(),
+            value: "theme".to_string(),
+            hint: "Ctrl+T".to_string(),
+        });
+        items.push(OverlayItem {
+            label: "Quit".to_string(),
+            value: "quit".to_string(),
+            hint: "Ctrl+Q".to_string(),
+        });
+
         self.mode = AppMode::ActionMenu(OverlayState::new(items, None));
     }
 
@@ -1067,6 +1082,10 @@ impl App {
     async fn execute_text_input_action(&mut self, action: TextInputAction, value: &str) -> Result<()> {
         match action {
             TextInputAction::RenameSession => {
+                if !self.has_slash_command("rename") {
+                    self.toast = Some(Toast::new("/rename not available".to_string()));
+                    return Ok(());
+                }
                 let cmd = format!("/rename {}", value);
                 self.pending_slash_command = Some(cmd.clone());
                 if let Some(ref mut claude) = self.claude {
@@ -1343,8 +1362,7 @@ impl App {
             return;
         }
 
-        // Most recent first
-        items.reverse();
+        // Oldest first (chronological order)
         self.mode = AppMode::CheckpointTimeline(OverlayState::new(items, None));
     }
 
