@@ -15,6 +15,8 @@ pub struct Config {
     pub effort: Option<String>,
     /// Maximum budget in USD per session.
     pub max_budget_usd: Option<f64>,
+    /// Path to MCP server config file (e.g. "~/.claude/mcp.json").
+    pub mcp_config: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +35,7 @@ impl Default for Config {
             model: None,
             effort: None,
             max_budget_usd: None,
+            mcp_config: None,
         }
     }
 }
@@ -172,6 +175,14 @@ mod tests {
         assert!(config.model.is_none());
         assert!(config.effort.is_none());
         assert!(config.max_budget_usd.is_none());
+        assert!(config.mcp_config.is_none());
+    }
+
+    #[test]
+    fn test_mcp_config() {
+        let toml = r#"mcp_config = "~/.claude/mcp.json""#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.mcp_config.as_deref(), Some("~/.claude/mcp.json"));
     }
 
     #[test]

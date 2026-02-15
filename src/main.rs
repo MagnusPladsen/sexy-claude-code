@@ -35,6 +35,10 @@ struct Cli {
     #[arg(long)]
     max_budget: Option<f64>,
 
+    /// Path to MCP server config file (overrides config)
+    #[arg(long)]
+    mcp_config: Option<String>,
+
     /// Continue the most recent session
     #[arg(long = "continue")]
     continue_session: bool,
@@ -48,8 +52,13 @@ struct Cli {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let config = config::Config::load(cli.config.as_ref())
+    let mut config = config::Config::load(cli.config.as_ref())
         .context("Failed to load configuration")?;
+
+    // Apply CLI overrides to config
+    if cli.mcp_config.is_some() {
+        config.mcp_config = cli.mcp_config;
+    }
 
     let theme_name = cli.theme.as_deref().unwrap_or(&config.theme);
     let theme = theme::Theme::load(theme_name).unwrap_or_else(|e| {
