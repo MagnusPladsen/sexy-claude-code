@@ -477,6 +477,11 @@ impl App {
             return Ok(());
         }
 
+        if ctrl && key.code == KeyCode::Char('f') {
+            self.open_file_context_panel();
+            return Ok(());
+        }
+
         if ctrl && key.code == KeyCode::Char('d') {
             self.open_diff_viewer();
             return Ok(());
@@ -996,6 +1001,58 @@ impl App {
         let lines: Vec<String> = diff_text.lines().map(|l| l.to_string()).collect();
         self.mode = AppMode::TextViewer {
             title: "Session Diffs".to_string(),
+            lines,
+            scroll: 0,
+        };
+    }
+
+    fn open_file_context_panel(&mut self) {
+        use crate::claude::conversation::ContentBlock;
+        use std::collections::BTreeMap;
+
+        // Collect file operations from conversation tool uses
+        let file_tools = ["Read", "Write", "Edit", "Glob", "Grep"];
+        let mut file_ops: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+        for msg in &self.conversation.messages {
+            for block in &msg.content {
+                if let ContentBlock::ToolUse { name, input, .. } = block {
+                    if !file_tools.contains(&name.as_str()) {
+                        continue;
+                    }
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(input) {
+                        let path = value
+                            .get("file_path")
+                            .or_else(|| value.get("path"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        if !path.is_empty() {
+                            file_ops
+                                .entry(path.to_string())
+                                .or_default()
+                                .push(name.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        if file_ops.is_empty() {
+            self.toast = Some(Toast::new("No file operations in this session".to_string()));
+            return;
+        }
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("{} files accessed", file_ops.len()));
+        lines.push(String::new());
+
+        for (path, ops) in &file_ops {
+            let summary: Vec<&str> = ops.iter().map(|s| s.as_str()).collect();
+            lines.push(format!("  {} [{}]", path, summary.join(", ")));
+        }
+
+        self.mode = AppMode::TextViewer {
+            title: "File Context".to_string(),
             lines,
             scroll: 0,
         };

@@ -191,7 +191,7 @@ impl<'a> Widget for StatusBar<'a> {
         }
 
         // Right: help hint
-        let right = "^K:menu | ^D:diff | ^I:rules | ^Q:quit ";
+        let right = "^K:menu | ^F:files | ^D:diff | ^Q:quit ";
         let right_start = area.right().saturating_sub(right.len() as u16);
         write_str(buf, right, right_start, area.y, area.right(), style);
     }
