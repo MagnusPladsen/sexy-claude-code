@@ -40,6 +40,7 @@ pub fn render(
     toast: Option<&Toast>,
     token_usage: (u64, u64),
     git_info: &GitInfo,
+    todo_summary: Option<&str>,
 ) {
     let size = frame.area();
 
@@ -85,7 +86,7 @@ pub fn render(
 
     // Status bar
     frame.render_widget(
-        StatusBar::new(&theme.name, theme, token_usage.0, token_usage.1, git_info),
+        StatusBar::new(&theme.name, theme, token_usage.0, token_usage.1, git_info, todo_summary),
         chunks[3],
     );
 

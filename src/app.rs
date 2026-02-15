@@ -14,6 +14,7 @@ use crate::claude::sessions;
 use crate::config::Config;
 use crate::git::GitInfo;
 use crate::theme::Theme;
+use crate::todo::TodoTracker;
 use crate::ui;
 use crate::ui::header::HEADER_HEIGHT;
 use crate::ui::input::InputEditor;
@@ -120,6 +121,8 @@ pub struct App {
     git_info: GitInfo,
     /// Frame counter at last git refresh (refresh every ~5s).
     git_last_refresh: u64,
+    /// Tracks Claude's todo list from TodoWrite tool calls.
+    todo_tracker: TodoTracker,
 }
 
 impl App {
@@ -161,6 +164,7 @@ impl App {
             budget_override,
             git_info: GitInfo::gather(),
             git_last_refresh: 0,
+            todo_tracker: TodoTracker::new(),
         }
     }
 
@@ -371,6 +375,20 @@ impl App {
                         self.total_output_tokens += u.output_tokens;
                     }
                     _ => {}
+                }
+
+                // Update todo tracker when a TodoWrite tool_use block completes
+                if let StreamEvent::ContentBlockStop { index } = &event {
+                    if let Some(msg) = self.conversation.messages.last() {
+                        if let Some(crate::claude::conversation::ContentBlock::ToolUse {
+                            name, input, ..
+                        }) = msg.content.get(*index)
+                        {
+                            if name == "TodoWrite" {
+                                self.todo_tracker.apply_todo_write(input);
+                            }
+                        }
+                    }
                 }
 
                 self.conversation.apply_event(&event);
@@ -888,6 +906,7 @@ impl App {
         let toast = self.toast.as_ref();
         let token_usage = (self.total_input_tokens, self.total_output_tokens);
         let git_info = &self.git_info;
+        let todo_summary = self.todo_tracker.summary();
 
         terminal.draw(|frame| {
             ui::render(
@@ -902,6 +921,7 @@ impl App {
                 toast,
                 token_usage,
                 git_info,
+                todo_summary.as_deref(),
             );
             if let Some((title, state)) = overlay {
                 ui::render_overlay(frame, title, state, theme);

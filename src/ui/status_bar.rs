@@ -15,6 +15,7 @@ pub struct StatusBar<'a> {
     input_tokens: u64,
     output_tokens: u64,
     git_info: &'a GitInfo,
+    todo_summary: Option<&'a str>,
 }
 
 impl<'a> StatusBar<'a> {
@@ -24,6 +25,7 @@ impl<'a> StatusBar<'a> {
         input_tokens: u64,
         output_tokens: u64,
         git_info: &'a GitInfo,
+        todo_summary: Option<&'a str>,
     ) -> Self {
         Self {
             theme_name,
@@ -31,6 +33,7 @@ impl<'a> StatusBar<'a> {
             input_tokens,
             output_tokens,
             git_info,
+            todo_summary,
         }
     }
 }
@@ -103,7 +106,17 @@ impl<'a> Widget for StatusBar<'a> {
             let git_style = Style::default()
                 .fg(git_color)
                 .bg(self.theme.status_bg);
-            write_str(buf, &display, left_end, area.y, area.right(), git_style);
+            left_end = write_str(buf, &display, left_end, area.y, area.right(), git_style);
+        }
+
+        // Todo summary (after git info)
+        if let Some(summary) = self.todo_summary {
+            let sep = " | ";
+            left_end = write_str(buf, sep, left_end, area.y, area.right(), style);
+            let todo_style = Style::default()
+                .fg(self.theme.info)
+                .bg(self.theme.status_bg);
+            write_str(buf, summary, left_end, area.y, area.right(), todo_style);
         }
 
         // Center: theme name + token usage + context bar
