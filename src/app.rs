@@ -1,5 +1,7 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use fuzzy_matcher::skim::SkimMatcherV2;
+use fuzzy_matcher::FuzzyMatcher;
 use ratatui::DefaultTerminal;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -13,6 +15,7 @@ use crate::ui;
 use crate::ui::header::HEADER_HEIGHT;
 use crate::ui::input::InputEditor;
 use crate::ui::overlay::{OverlayItem, OverlayState};
+use crate::ui::toast::Toast;
 
 enum Msg {
     ClaudeEvent(StreamEvent),
@@ -33,14 +36,21 @@ enum AppMode {
     ThemePicker(OverlayState),
 }
 
+/// A single item in the slash command completion popup.
+pub struct CompletionItem {
+    pub name: String,
+    pub description: String,
+    pub score: i64,
+}
+
 /// Tracks slash command completion state.
 pub struct CompletionState {
-    pub matches: Vec<String>,
+    pub matches: Vec<CompletionItem>,
     pub selected: usize,
 }
 
 impl CompletionState {
-    fn new(matches: Vec<String>) -> Self {
+    fn new(matches: Vec<CompletionItem>) -> Self {
         Self {
             matches,
             selected: 0,
@@ -63,7 +73,7 @@ impl CompletionState {
     }
 
     fn selected_command(&self) -> Option<&str> {
-        self.matches.get(self.selected).map(|s| s.as_str())
+        self.matches.get(self.selected).map(|s| s.name.as_str())
     }
 }
 
@@ -84,6 +94,8 @@ pub struct App {
     completion: Option<CompletionState>,
     /// Tracks the last slash command sent, so we can show feedback for empty results.
     pending_slash_command: Option<String>,
+    /// Brief notification shown after a slash command completes with no output.
+    toast: Option<Toast>,
 }
 
 impl App {
@@ -104,6 +116,7 @@ impl App {
             slash_commands: Vec::new(),
             completion: None,
             pending_slash_command: None,
+            toast: None,
         }
     }
 
@@ -172,26 +185,14 @@ impl App {
                     self.slash_commands = slash_commands.clone();
                 }
 
-                // Handle Result events from slash commands that return empty text
+                // Show toast for empty slash command results, clear tracking
                 if let StreamEvent::Result { ref text, is_error } = event {
-                    if let Some(cmd) = self.pending_slash_command.take() {
-                        if text.is_empty() {
-                            // Command produced no output — show feedback
-                            let msg = format!(
-                                "{cmd} is not supported in this mode."
-                            );
-                            self.conversation.push_system_message(msg);
-                        } else if is_error {
-                            // Command returned an error — prefix it
-                            let msg = format!("Error running {cmd}: {text}");
-                            self.conversation.push_system_message(msg);
-                            // Skip apply_event since we're showing our own message
-                            if self.auto_scroll {
-                                self.scroll_to_bottom();
-                            }
-                            return Ok(());
+                    if text.is_empty() && !is_error {
+                        if let Some(cmd) = self.pending_slash_command.as_ref() {
+                            self.toast = Some(Toast::new(format!("Ran {cmd}")));
                         }
                     }
+                    self.pending_slash_command.take();
                 }
 
                 // A streaming response clears the pending command
@@ -220,6 +221,10 @@ impl App {
             }
             Msg::Tick => {
                 self.frame_count = self.frame_count.wrapping_add(1);
+                // Expire toast notifications
+                if self.toast.as_ref().is_some_and(|t| t.is_expired()) {
+                    self.toast = None;
+                }
             }
         }
         Ok(())
@@ -412,7 +417,7 @@ impl App {
         Ok(())
     }
 
-    /// Update slash command completions based on current input text.
+    /// Update slash command completions based on current input text using fuzzy matching.
     fn update_completions(&mut self) {
         let content = self.input.content();
         if !content.starts_with('/') || content.contains(' ') || content.contains('\n') {
@@ -420,13 +425,41 @@ impl App {
             return;
         }
 
-        let prefix = &content[1..]; // strip the leading '/'
-        let matches: Vec<String> = self
+        let query = &content[1..]; // strip the leading '/'
+        if query.is_empty() {
+            // Show all commands when just "/" is typed
+            let matches: Vec<CompletionItem> = self
+                .slash_commands
+                .iter()
+                .map(|cmd| CompletionItem {
+                    name: cmd.clone(),
+                    description: String::new(),
+                    score: 0,
+                })
+                .collect();
+            if matches.is_empty() {
+                self.completion = None;
+            } else {
+                self.completion = Some(CompletionState::new(matches));
+            }
+            return;
+        }
+
+        let matcher = SkimMatcherV2::default();
+        let mut matches: Vec<CompletionItem> = self
             .slash_commands
             .iter()
-            .filter(|cmd| cmd.starts_with(prefix))
-            .cloned()
+            .filter_map(|cmd| {
+                matcher.fuzzy_match(cmd, query).map(|score| CompletionItem {
+                    name: cmd.clone(),
+                    description: String::new(),
+                    score,
+                })
+            })
             .collect();
+
+        // Sort by score descending (best match first)
+        matches.sort_by(|a, b| b.score.cmp(&a.score));
 
         if matches.is_empty() {
             self.completion = None;
@@ -581,6 +614,7 @@ impl App {
         let scroll_offset = self.scroll_offset;
         let is_streaming = self.conversation.is_streaming();
         let completion = self.completion.as_ref();
+        let toast = self.toast.as_ref();
 
         terminal.draw(|frame| {
             ui::render(
@@ -592,6 +626,7 @@ impl App {
                 scroll_offset,
                 is_streaming,
                 completion,
+                toast,
             );
             if let Some((title, state)) = overlay {
                 ui::render_overlay(frame, title, state, theme);
