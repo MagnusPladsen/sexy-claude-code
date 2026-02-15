@@ -287,9 +287,8 @@ fn render_message(msg: &Message, lines: &mut Vec<StyledLine>, content_width: usi
             ContentBlock::ToolResult { .. } => {
                 // Rendered inline after the matching ToolUse above
             }
-            ContentBlock::Thinking(_text) => {
-                // Thinking blocks will be rendered in #18.
-                // For now, skip — they're parsed but not yet displayed.
+            ContentBlock::Thinking(text) => {
+                render_thinking(text, lines, theme);
             }
         }
     }
@@ -413,6 +412,49 @@ fn render_tool_result(
                 content_style,
             ));
         }
+    }
+}
+
+/// Maximum visible lines before collapsing thinking block output.
+const THINKING_COLLAPSE_PREVIEW: usize = 4;
+
+/// Render a thinking block with dim styling and a "Thinking" header.
+fn render_thinking(text: &str, lines: &mut Vec<StyledLine>, theme: &Theme) {
+    if text.is_empty() {
+        return;
+    }
+
+    let header_style = Style::default()
+        .fg(theme.info)
+        .add_modifier(Modifier::DIM | Modifier::ITALIC);
+    let content_style = Style::default()
+        .fg(theme.foreground)
+        .add_modifier(Modifier::DIM | Modifier::ITALIC);
+
+    // Header
+    lines.push(StyledLine {
+        spans: vec![StyledSpan {
+            text: "  Thinking...".to_string(),
+            style: header_style,
+        }],
+    });
+
+    // Content — always collapsed (show first few lines)
+    let total_lines = text.lines().count();
+    for line_text in text.lines().take(THINKING_COLLAPSE_PREVIEW) {
+        lines.push(StyledLine::plain(
+            &format!("    {line_text}"),
+            content_style,
+        ));
+    }
+    if total_lines > THINKING_COLLAPSE_PREVIEW {
+        let dim_style = Style::default()
+            .fg(theme.info)
+            .add_modifier(Modifier::DIM);
+        lines.push(StyledLine::plain(
+            &format!("    ... {} more lines", total_lines - THINKING_COLLAPSE_PREVIEW),
+            dim_style,
+        ));
     }
 }
 
@@ -910,5 +952,63 @@ mod tests {
     fn test_extract_primary_arg_invalid_json() {
         let arg = extract_primary_arg("Bash", "not json");
         assert!(arg.is_none());
+    }
+
+    #[test]
+    fn test_thinking_block_renders() {
+        let mut conv = Conversation::new();
+        let theme = crate::theme::Theme::default_theme();
+        conv.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Thinking(
+                "Let me analyze this.\nFirst step.\nSecond step.".to_string(),
+            )],
+        });
+        let lines = render_conversation(&conv, 80, &theme);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(all_text.contains("Thinking..."), "Expected thinking header");
+        assert!(all_text.contains("Let me analyze this."), "Expected thinking content");
+    }
+
+    #[test]
+    fn test_thinking_block_empty_hidden() {
+        let mut conv = Conversation::new();
+        let theme = crate::theme::Theme::default_theme();
+        conv.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Thinking(String::new())],
+        });
+        let lines = render_conversation(&conv, 80, &theme);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(!all_text.contains("Thinking"), "Empty thinking should be hidden");
+    }
+
+    #[test]
+    fn test_thinking_block_long_collapses() {
+        let mut conv = Conversation::new();
+        let theme = crate::theme::Theme::default_theme();
+        let long_thinking = (0..10)
+            .map(|i| format!("thought line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        conv.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Thinking(long_thinking)],
+        });
+        let lines = render_conversation(&conv, 80, &theme);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(all_text.contains("... 6 more lines"), "Expected collapse indicator");
     }
 }
