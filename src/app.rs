@@ -39,6 +39,11 @@ enum AppMode {
     ActionMenu(OverlayState),
     ThemePicker(OverlayState),
     SessionPicker(OverlayState),
+    TextViewer {
+        title: String,
+        lines: Vec<String>,
+        scroll: usize,
+    },
 }
 
 /// A single item in the slash command completion popup.
@@ -433,6 +438,7 @@ impl App {
             AppMode::ActionMenu(_)
             | AppMode::ThemePicker(_)
             | AppMode::SessionPicker(_) => self.handle_key_overlay(key).await,
+            AppMode::TextViewer { .. } => self.handle_key_text_viewer(key),
         }
     }
 
@@ -457,6 +463,11 @@ impl App {
 
         if ctrl && key.code == KeyCode::Char('r') {
             self.open_session_picker();
+            return Ok(());
+        }
+
+        if ctrl && key.code == KeyCode::Char('i') {
+            self.open_instructions_viewer();
             return Ok(());
         }
 
@@ -620,7 +631,7 @@ impl App {
             AppMode::ActionMenu(ref mut state)
             | AppMode::ThemePicker(ref mut state)
             | AppMode::SessionPicker(ref mut state) => f(state),
-            AppMode::Normal => {}
+            AppMode::Normal | AppMode::TextViewer { .. } => {}
         }
     }
 
@@ -871,7 +882,71 @@ impl App {
                     self.resume_session(&session_id).await?;
                 }
             }
-            AppMode::Normal => {}
+            AppMode::Normal | AppMode::TextViewer { .. } => {}
+        }
+        Ok(())
+    }
+
+    fn open_instructions_viewer(&mut self) {
+        // Search for CLAUDE.md in current directory and parents
+        let mut dir = std::env::current_dir().ok();
+        let mut content = None;
+        while let Some(ref d) = dir {
+            let path = d.join("CLAUDE.md");
+            if path.exists() {
+                content = std::fs::read_to_string(&path).ok();
+                break;
+            }
+            dir = d.parent().map(|p| p.to_path_buf());
+        }
+
+        let text = match content {
+            Some(c) => c,
+            None => {
+                self.toast = Some(Toast::new("No CLAUDE.md found".to_string()));
+                return;
+            }
+        };
+
+        let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+        self.mode = AppMode::TextViewer {
+            title: "CLAUDE.md".to_string(),
+            lines,
+            scroll: 0,
+        };
+    }
+
+    fn handle_key_text_viewer(&mut self, key: event::KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let AppMode::TextViewer { ref mut scroll, .. } = self.mode {
+                    *scroll = scroll.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let AppMode::TextViewer { ref mut scroll, .. } = self.mode {
+                    *scroll += 1;
+                }
+            }
+            KeyCode::PageUp => {
+                if let AppMode::TextViewer { ref mut scroll, .. } = self.mode {
+                    *scroll = scroll.saturating_sub(20);
+                }
+            }
+            KeyCode::PageDown => {
+                if let AppMode::TextViewer { ref mut scroll, .. } = self.mode {
+                    *scroll += 20;
+                }
+            }
+            KeyCode::Home => {
+                if let AppMode::TextViewer { ref mut scroll, .. } = self.mode {
+                    *scroll = 0;
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -883,7 +958,7 @@ impl App {
             AppMode::ActionMenu(state) => Some(("Actions", state)),
             AppMode::ThemePicker(state) => Some(("Select Theme", state)),
             AppMode::SessionPicker(state) => Some(("Resume Session", state)),
-            AppMode::Normal => None,
+            AppMode::Normal | AppMode::TextViewer { .. } => None,
         };
 
         // Clamp scroll before rendering
@@ -907,6 +982,14 @@ impl App {
         let token_usage = (self.total_input_tokens, self.total_output_tokens);
         let git_info = &self.git_info;
         let todo_summary = self.todo_tracker.summary();
+        let text_viewer = match &self.mode {
+            AppMode::TextViewer {
+                title,
+                lines,
+                scroll,
+            } => Some((title.as_str(), lines.as_slice(), *scroll)),
+            _ => None,
+        };
 
         terminal.draw(|frame| {
             ui::render(
@@ -925,6 +1008,9 @@ impl App {
             );
             if let Some((title, state)) = overlay {
                 ui::render_overlay(frame, title, state, theme);
+            }
+            if let Some((title, lines, scroll)) = text_viewer {
+                ui::render_text_viewer(frame, title, lines, scroll, theme);
             }
         })?;
 
