@@ -151,6 +151,8 @@ pub struct App {
     history: InputHistory,
     /// Current position when browsing history with Up/Down arrow (None = not browsing).
     history_browse_index: Option<usize>,
+    /// Whether all tool result blocks are expanded (toggled with Ctrl+E).
+    tools_expanded: bool,
 }
 
 impl App {
@@ -196,6 +198,7 @@ impl App {
             detected_model: None,
             history: InputHistory::new(),
             history_browse_index: None,
+            tools_expanded: false,
         }
     }
 
@@ -512,6 +515,13 @@ impl App {
             return Ok(());
         }
 
+        if ctrl && key.code == KeyCode::Char('e') {
+            self.tools_expanded = !self.tools_expanded;
+            let msg = if self.tools_expanded { "Tool output expanded" } else { "Tool output collapsed" };
+            self.toast = Some(Toast::new(msg.to_string()));
+            return Ok(());
+        }
+
         // Scrolling
         match key.code {
             KeyCode::PageUp => {
@@ -823,7 +833,7 @@ impl App {
     }
 
     fn clamp_scroll(&mut self) {
-        let total = ui::claude_pane::total_lines(&self.conversation, 80, &self.theme);
+        let total = ui::claude_pane::total_lines_with_options(&self.conversation, 80, &self.theme, self.tools_expanded);
         let max_scroll = total.saturating_sub(10);
         if self.scroll_offset >= max_scroll {
             self.scroll_offset = max_scroll;
@@ -1322,10 +1332,11 @@ impl App {
         // Clamp scroll before rendering
         let term_size = terminal.size()?;
         let visible_height = term_size.height.saturating_sub(HEADER_HEIGHT + 4) as usize;
-        let total_conv_lines = ui::claude_pane::total_lines(
+        let total_conv_lines = ui::claude_pane::total_lines_with_options(
             &self.conversation,
             term_size.width.saturating_sub(4) as usize,
             &self.theme,
+            self.tools_expanded,
         );
         if self.auto_scroll || self.scroll_offset > total_conv_lines {
             self.scroll_offset = total_conv_lines.saturating_sub(visible_height);
@@ -1344,6 +1355,7 @@ impl App {
             .or(self.model_override.as_deref())
             .or(self.config.model.as_deref());
         let permission_mode = self.config.permission_mode.as_deref();
+        let tools_expanded = self.tools_expanded;
         let text_viewer = match &self.mode {
             AppMode::TextViewer {
                 title,
@@ -1381,6 +1393,7 @@ impl App {
                 todo_summary.as_deref(),
                 model_name,
                 permission_mode,
+                tools_expanded,
             );
             if let Some((title, state)) = overlay {
                 ui::render_overlay(frame, title, state, theme);
