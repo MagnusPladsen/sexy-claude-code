@@ -16,6 +16,7 @@ use ratatui::Frame;
 
 use crate::app::CompletionState;
 use crate::claude::conversation::Conversation;
+use crate::diff::{self, DiffOp};
 use crate::git::GitInfo;
 use crate::theme::Theme;
 use crate::ui::toast::Toast;
@@ -300,10 +301,89 @@ pub fn render_text_viewer(
         .bg(theme.surface)
         .add_modifier(Modifier::BOLD);
 
-    for (i, line) in lines.iter().skip(scroll).take(visible).enumerate() {
+    // Collect visible lines with their absolute indices for lookahead
+    let visible_lines: Vec<(usize, &String)> = lines.iter().skip(scroll).take(visible).enumerate().collect();
+    let mut skip_next = false;
+
+    for (vi, &(i, line)) in visible_lines.iter().enumerate() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
         let row_y = inner.y + i as u16;
 
-        // Context-aware styling: diff lines, markdown headings, code blocks
+        // Check for adjacent Remove+Add pair for word-level diff
+        let is_remove = line.starts_with("- ") && !line.starts_with("--- ");
+        let next_is_add = visible_lines.get(vi + 1)
+            .map(|&(_, next)| next.starts_with("+ ") && !next.starts_with("+++ "))
+            .unwrap_or(false);
+
+        if is_remove && next_is_add {
+            let next_line = visible_lines[vi + 1].1;
+            let old_text = &line[2..];
+            let new_text = &next_line[2..];
+            let word_ops = diff::diff_words(old_text, new_text);
+
+            // Render remove line with word-level highlighting
+            let mut col = inner.x;
+            // Write "- " prefix
+            for ch in "- ".chars() {
+                if col >= inner.right() { break; }
+                if let Some(cell) = buf.cell_mut((col, row_y)) {
+                    cell.set_char(ch);
+                    cell.set_style(diff_remove_style);
+                }
+                col += 1;
+            }
+            for op in &word_ops {
+                let (text, style) = match op {
+                    DiffOp::Equal(t) => (*t, text_style.add_modifier(Modifier::DIM)),
+                    DiffOp::Remove(t) => (*t, diff_remove_style),
+                    DiffOp::Add(_) => continue, // skip adds on the remove line
+                };
+                for ch in text.chars() {
+                    if col >= inner.right() { break; }
+                    if let Some(cell) = buf.cell_mut((col, row_y)) {
+                        cell.set_char(ch);
+                        cell.set_style(style);
+                    }
+                    col += 1;
+                }
+            }
+
+            // Render add line with word-level highlighting
+            let next_row_y = inner.y + (i + 1) as u16;
+            if next_row_y < inner.bottom() {
+                let mut col = inner.x;
+                for ch in "+ ".chars() {
+                    if col >= inner.right() { break; }
+                    if let Some(cell) = buf.cell_mut((col, next_row_y)) {
+                        cell.set_char(ch);
+                        cell.set_style(diff_add_style);
+                    }
+                    col += 1;
+                }
+                for op in &word_ops {
+                    let (text, style) = match op {
+                        DiffOp::Equal(t) => (*t, text_style.add_modifier(Modifier::DIM)),
+                        DiffOp::Add(t) => (*t, diff_add_style),
+                        DiffOp::Remove(_) => continue, // skip removes on the add line
+                    };
+                    for ch in text.chars() {
+                        if col >= inner.right() { break; }
+                        if let Some(cell) = buf.cell_mut((col, next_row_y)) {
+                            cell.set_char(ch);
+                            cell.set_style(style);
+                        }
+                        col += 1;
+                    }
+                }
+            }
+            skip_next = true;
+            continue;
+        }
+
+        // Standard single-line styling
         let style = if line.starts_with("+ ") || line.starts_with("+++ ") {
             diff_add_style
         } else if line.starts_with("- ") || line.starts_with("--- ") {

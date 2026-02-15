@@ -85,6 +85,44 @@ pub fn format_unified(ops: &[DiffOp<'_>]) -> String {
     out
 }
 
+/// Compute a word-level diff between two lines.
+/// Splits on whitespace boundaries, preserving whitespace as separate tokens.
+/// Returns a sequence of DiffOp operations at the word level.
+pub fn diff_words<'a>(old: &'a str, new: &'a str) -> Vec<DiffOp<'a>> {
+    let old_words = tokenize_words(old);
+    let new_words = tokenize_words(new);
+
+    let lcs = lcs_table(&old_words, &new_words);
+    build_diff(&old_words, &new_words, &lcs)
+}
+
+/// Split a string into tokens preserving whitespace as separate entries.
+/// "hello  world" → ["hello", "  ", "world"]
+fn tokenize_words(s: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let mut chars = s.char_indices().peekable();
+
+    while let Some(&(start, ch)) = chars.peek() {
+        if ch.is_whitespace() {
+            // Consume all consecutive whitespace
+            while chars.peek().is_some_and(|&(_, c)| c.is_whitespace()) {
+                chars.next();
+            }
+            let end = chars.peek().map(|&(i, _)| i).unwrap_or(s.len());
+            tokens.push(&s[start..end]);
+        } else {
+            // Consume until whitespace
+            chars.next();
+            while chars.peek().is_some_and(|&(_, c)| !c.is_whitespace()) {
+                chars.next();
+            }
+            let end = chars.peek().map(|&(i, _)| i).unwrap_or(s.len());
+            tokens.push(&s[start..end]);
+        }
+    }
+    tokens
+}
+
 /// Return only the changed operations (no Equal), with limited context.
 /// Shows `context` equal lines before/after each change group.
 pub fn with_context<'a>(ops: &'a [DiffOp<'a>], context: usize) -> Vec<&'a DiffOp<'a>> {
@@ -211,5 +249,57 @@ mod tests {
         // Should only show b→c change, not match braces incorrectly
         let changes: Vec<_> = ops.iter().filter(|o| !matches!(o, DiffOp::Equal(_))).collect();
         assert_eq!(changes.len(), 2); // Remove "    b", Add "    c"
+    }
+
+    #[test]
+    fn test_tokenize_words() {
+        let tokens = tokenize_words("hello  world");
+        assert_eq!(tokens, vec!["hello", "  ", "world"]);
+    }
+
+    #[test]
+    fn test_tokenize_words_leading_space() {
+        let tokens = tokenize_words("  hello");
+        assert_eq!(tokens, vec!["  ", "hello"]);
+    }
+
+    #[test]
+    fn test_tokenize_words_empty() {
+        let tokens = tokenize_words("");
+        assert!(tokens.is_empty());
+    }
+
+    #[test]
+    fn test_diff_words_single_word_change() {
+        let ops = diff_words("hello world", "hello earth");
+        assert_eq!(
+            ops,
+            vec![
+                DiffOp::Equal("hello"),
+                DiffOp::Equal(" "),
+                DiffOp::Remove("world"),
+                DiffOp::Add("earth"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_diff_words_identical() {
+        let ops = diff_words("foo bar", "foo bar");
+        assert_eq!(
+            ops,
+            vec![
+                DiffOp::Equal("foo"),
+                DiffOp::Equal(" "),
+                DiffOp::Equal("bar"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_diff_words_insertion() {
+        let ops = diff_words("a c", "a b c");
+        let adds: Vec<_> = ops.iter().filter(|o| matches!(o, DiffOp::Add(_))).collect();
+        assert!(!adds.is_empty());
     }
 }
