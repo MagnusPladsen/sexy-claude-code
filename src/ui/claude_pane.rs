@@ -17,6 +17,7 @@ pub struct ClaudePane<'a> {
     theme: &'a Theme,
     scroll_offset: usize,
     frame_count: u64,
+    tools_expanded: bool,
 }
 
 impl<'a> ClaudePane<'a> {
@@ -31,7 +32,13 @@ impl<'a> ClaudePane<'a> {
             theme,
             scroll_offset,
             frame_count,
+            tools_expanded: false,
         }
+    }
+
+    pub fn with_tools_expanded(mut self, expanded: bool) -> Self {
+        self.tools_expanded = expanded;
+        self
     }
 }
 
@@ -55,7 +62,7 @@ impl Widget for ClaudePane<'_> {
         }
 
         // Convert conversation to wrapped lines
-        let mut lines = render_conversation(self.conversation, area.width as usize, self.theme);
+        let mut lines = render_conversation_with_options(self.conversation, area.width as usize, self.theme, self.tools_expanded);
 
         // Show spinner when waiting for tool execution
         if self.conversation.is_awaiting_tool_result() || self.conversation.is_streaming() {
@@ -179,7 +186,12 @@ fn separator_style() -> Style {
 // ---------------------------------------------------------------------------
 
 /// Convert the entire conversation into styled, wrapped lines for rendering.
+#[cfg(test)]
 fn render_conversation(conversation: &Conversation, width: usize, theme: &Theme) -> Vec<StyledLine> {
+    render_conversation_with_options(conversation, width, theme, false)
+}
+
+fn render_conversation_with_options(conversation: &Conversation, width: usize, theme: &Theme, tools_expanded: bool) -> Vec<StyledLine> {
     let mut lines = Vec::new();
     let content_width = width.saturating_sub(2); // 2-char left padding
 
@@ -189,13 +201,13 @@ fn render_conversation(conversation: &Conversation, width: usize, theme: &Theme)
             let sep = "─".repeat(width.min(120));
             lines.push(StyledLine::plain(&sep, separator_style()));
         }
-        render_message(msg, &mut lines, content_width, theme);
+        render_message(msg, &mut lines, content_width, theme, tools_expanded);
     }
 
     lines
 }
 
-fn render_message(msg: &Message, lines: &mut Vec<StyledLine>, content_width: usize, theme: &Theme) {
+fn render_message(msg: &Message, lines: &mut Vec<StyledLine>, content_width: usize, theme: &Theme, tools_expanded: bool) {
     // Role label line
     match msg.role {
         Role::User => {
@@ -281,7 +293,9 @@ fn render_message(msg: &Message, lines: &mut Vec<StyledLine>, content_width: usi
                     ..
                 }) = tool_results.get(id.as_str())
                 {
-                    render_tool_result(content, *is_error, *collapsed, lines, theme);
+                    // When tools_expanded is true, force collapsed=false to show full output
+                    let effective_collapsed = if tools_expanded { false } else { *collapsed };
+                    render_tool_result(content, *is_error, effective_collapsed, lines, theme);
                 }
             }
             ContentBlock::ToolResult { .. } => {
@@ -753,8 +767,8 @@ fn split_at_width(s: &str, max_width: usize) -> (&str, &str) {
 }
 
 /// Calculate total number of rendered lines for scroll calculations.
-pub fn total_lines(conversation: &Conversation, width: usize, theme: &Theme) -> usize {
-    render_conversation(conversation, width, theme).len()
+pub fn total_lines_with_options(conversation: &Conversation, width: usize, theme: &Theme, tools_expanded: bool) -> usize {
+    render_conversation_with_options(conversation, width, theme, tools_expanded).len()
 }
 
 #[cfg(test)]

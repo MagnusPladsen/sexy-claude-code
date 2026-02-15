@@ -43,6 +43,7 @@ pub fn render(
     todo_summary: Option<&str>,
     model_name: Option<&str>,
     permission_mode: Option<&str>,
+    tools_expanded: bool,
 ) {
     let size = frame.area();
 
@@ -70,7 +71,8 @@ pub fn render(
     let claude_inner = claude_block.inner(chunks[1]);
     frame.render_widget(claude_block, chunks[1]);
     frame.render_widget(
-        ClaudePane::new(conversation, theme, scroll_offset, frame_count),
+        ClaudePane::new(conversation, theme, scroll_offset, frame_count)
+            .with_tools_expanded(tools_expanded),
         claude_inner,
     );
 
