@@ -346,6 +346,112 @@ fn render_tool_use(
         });
     }
     lines.push(StyledLine { spans });
+
+    // For Edit tool, show a diff preview of old_string → new_string
+    if name == "Edit" {
+        render_edit_diff(input, lines, theme);
+    }
+    // For Write tool, show a content preview
+    if name == "Write" {
+        render_write_preview(input, lines, theme);
+    }
+}
+
+/// Maximum diff lines to show before truncating.
+const DIFF_MAX_LINES: usize = 20;
+
+/// Render a diff preview for Edit tool invocations.
+fn render_edit_diff(input: &str, lines: &mut Vec<StyledLine>, theme: &Theme) {
+    let value: serde_json::Value = match serde_json::from_str(input) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let old = value.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
+    let new = value.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+
+    if old.is_empty() && new.is_empty() {
+        return;
+    }
+
+    let removed_style = Style::default().fg(Color::Rgb(255, 100, 100));
+    let added_style = Style::default().fg(Color::Rgb(100, 255, 100));
+
+    let mut diff_lines = 0;
+    let mut total_lines = 0;
+
+    // Count total lines for truncation
+    for line in old.lines() {
+        if !new.contains(line) {
+            total_lines += 1;
+        }
+    }
+    for line in new.lines() {
+        if !old.contains(line) {
+            total_lines += 1;
+        }
+    }
+
+    // Show removed lines
+    for line in old.lines() {
+        if diff_lines >= DIFF_MAX_LINES {
+            break;
+        }
+        if !new.contains(line) {
+            lines.push(StyledLine::plain(&format!("    - {line}"), removed_style));
+            diff_lines += 1;
+        }
+    }
+    // Show added lines
+    for line in new.lines() {
+        if diff_lines >= DIFF_MAX_LINES {
+            break;
+        }
+        if !old.contains(line) {
+            lines.push(StyledLine::plain(&format!("    + {line}"), added_style));
+            diff_lines += 1;
+        }
+    }
+
+    if total_lines > DIFF_MAX_LINES {
+        let dim_style = Style::default()
+            .fg(theme.info)
+            .add_modifier(Modifier::DIM);
+        lines.push(StyledLine::plain(
+            &format!("    ... {} more diff lines", total_lines - DIFF_MAX_LINES),
+            dim_style,
+        ));
+    }
+}
+
+/// Render a content preview for Write tool invocations.
+fn render_write_preview(input: &str, lines: &mut Vec<StyledLine>, theme: &Theme) {
+    let value: serde_json::Value = match serde_json::from_str(input) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let content = match value.get("content").and_then(|v| v.as_str()) {
+        Some(c) if !c.is_empty() => c,
+        _ => return,
+    };
+
+    let dim_style = Style::default()
+        .fg(theme.foreground)
+        .add_modifier(Modifier::DIM);
+    let total = content.lines().count();
+    let preview_lines = 10;
+
+    for line_text in content.lines().take(preview_lines) {
+        lines.push(StyledLine::plain(&format!("    {line_text}"), dim_style));
+    }
+    if total > preview_lines {
+        let info_style = Style::default()
+            .fg(theme.info)
+            .add_modifier(Modifier::DIM);
+        lines.push(StyledLine::plain(
+            &format!("    ... {} more lines", total - preview_lines),
+            info_style,
+        ));
+    }
 }
 
 /// Maximum visible lines before collapsing tool result output.
@@ -1010,5 +1116,51 @@ mod tests {
             .map(|s| s.text.as_str())
             .collect();
         assert!(all_text.contains("... 6 more lines"), "Expected collapse indicator");
+    }
+
+    #[test]
+    fn test_edit_diff_preview() {
+        let mut conv = Conversation::new();
+        let theme = crate::theme::Theme::default_theme();
+        conv.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "t1".to_string(),
+                name: "Edit".to_string(),
+                input: r#"{"file_path":"src/main.rs","old_string":"let x = 1;","new_string":"let x = 42;"}"#.to_string(),
+            }],
+        });
+        let lines = render_conversation(&conv, 80, &theme);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(all_text.contains("Edit"), "Expected Edit tool header");
+        assert!(all_text.contains("- let x = 1;"), "Expected removed line");
+        assert!(all_text.contains("+ let x = 42;"), "Expected added line");
+    }
+
+    #[test]
+    fn test_write_content_preview() {
+        let mut conv = Conversation::new();
+        let theme = crate::theme::Theme::default_theme();
+        conv.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "t1".to_string(),
+                name: "Write".to_string(),
+                input: r#"{"file_path":"test.txt","content":"line one\nline two\nline three"}"#.to_string(),
+            }],
+        });
+        let lines = render_conversation(&conv, 80, &theme);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(all_text.contains("Write"), "Expected Write tool header");
+        assert!(all_text.contains("line one"), "Expected content preview");
+        assert!(all_text.contains("line three"), "Expected all content lines");
     }
 }
