@@ -2,6 +2,7 @@ pub mod borders;
 pub mod claude_pane;
 pub mod header;
 pub mod input;
+pub mod markdown;
 pub mod overlay;
 pub mod status_bar;
 pub mod toast;
