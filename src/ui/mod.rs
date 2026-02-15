@@ -328,3 +328,102 @@ pub fn render_text_viewer(
         }
     }
 }
+
+/// Render a history search overlay with a query input and scrollable match list.
+pub fn render_history_search(
+    frame: &mut Frame,
+    query: &str,
+    matches: &[String],
+    selected: usize,
+    theme: &Theme,
+) {
+    let area = frame.area();
+
+    // Popup size: ~60% width, up to 50% height
+    let width = (area.width * 60 / 100).max(30).min(area.width.saturating_sub(4));
+    let max_items = 12usize;
+    let height = ((max_items as u16) + 4).min(area.height.saturating_sub(2)); // +4 for borders+query
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = Rect::new(x, y, width, height);
+
+    let buf = frame.buffer_mut();
+    Clear.render(popup, buf);
+
+    let title = format!(" History Search: {} ", if query.is_empty() { "(type to filter)" } else { query });
+    let block = Block::default()
+        .title(title)
+        .title_style(Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))
+        .title_bottom(format!(" {} matches | Enter to select | Esc to cancel ", matches.len()))
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(theme.border_focused))
+        .style(Style::default().bg(theme.surface).fg(theme.foreground));
+
+    let inner = block.inner(popup);
+    block.render(popup, buf);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let visible = inner.height as usize;
+
+    // Scroll to keep selected visible
+    let scroll = if selected >= visible {
+        selected - visible + 1
+    } else {
+        0
+    };
+
+    for (vi, entry) in matches.iter().skip(scroll).take(visible).enumerate() {
+        let row_y = inner.y + vi as u16;
+        if row_y >= inner.bottom() {
+            break;
+        }
+
+        let is_selected = vi + scroll == selected;
+        let entry_style = if is_selected {
+            Style::default()
+                .fg(theme.primary)
+                .bg(theme.overlay)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.foreground).bg(theme.surface)
+        };
+
+        // Fill row background
+        let bg_style = if is_selected {
+            Style::default().bg(theme.overlay)
+        } else {
+            Style::default().bg(theme.surface)
+        };
+        for col in inner.x..inner.right() {
+            if let Some(cell) = buf.cell_mut((col, row_y)) {
+                cell.set_char(' ');
+                cell.set_style(bg_style);
+            }
+        }
+
+        // Write entry text (truncate multi-line to first line + indicator)
+        let marker = if is_selected { " \u{25b8} " } else { "   " };
+        let first_line = entry.lines().next().unwrap_or("");
+        let display = if entry.contains('\n') {
+            format!("{marker}{first_line} ...")
+        } else {
+            format!("{marker}{first_line}")
+        };
+
+        let mut col = inner.x;
+        for ch in display.chars() {
+            if col >= inner.right() {
+                break;
+            }
+            if let Some(cell) = buf.cell_mut((col, row_y)) {
+                cell.set_char(ch);
+                cell.set_style(entry_style);
+            }
+            col += 1;
+        }
+    }
+}

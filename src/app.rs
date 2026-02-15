@@ -13,6 +13,7 @@ use crate::claude::process::{ClaudeProcess, SpawnOptions};
 use crate::claude::sessions;
 use crate::config::Config;
 use crate::git::GitInfo;
+use crate::history::InputHistory;
 use crate::theme::Theme;
 use crate::todo::TodoTracker;
 use crate::ui;
@@ -43,6 +44,11 @@ enum AppMode {
         title: String,
         lines: Vec<String>,
         scroll: usize,
+    },
+    HistorySearch {
+        query: String,
+        matches: Vec<String>,
+        selected: usize,
     },
 }
 
@@ -130,6 +136,10 @@ pub struct App {
     todo_tracker: TodoTracker,
     /// Model name detected from the most recent MessageStart event.
     detected_model: Option<String>,
+    /// Persistent input history for Up/Down arrow and Ctrl+R search.
+    history: InputHistory,
+    /// Current position when browsing history with Up/Down arrow (None = not browsing).
+    history_browse_index: Option<usize>,
 }
 
 impl App {
@@ -173,6 +183,8 @@ impl App {
             git_last_refresh: 0,
             todo_tracker: TodoTracker::new(),
             detected_model: None,
+            history: InputHistory::new(),
+            history_browse_index: None,
         }
     }
 
@@ -445,6 +457,7 @@ impl App {
             | AppMode::ThemePicker(_)
             | AppMode::SessionPicker(_) => self.handle_key_overlay(key).await,
             AppMode::TextViewer { .. } => self.handle_key_text_viewer(key),
+            AppMode::HistorySearch { .. } => self.handle_key_history_search(key),
         }
     }
 
@@ -468,7 +481,7 @@ impl App {
         }
 
         if ctrl && key.code == KeyCode::Char('r') {
-            self.open_session_picker();
+            self.open_history_search();
             return Ok(());
         }
 
@@ -538,11 +551,47 @@ impl App {
             }
         }
 
+        // History browsing with Up/Down when input is empty (and no completion popup)
+        if self.completion.is_none() && self.input.is_empty() {
+            match key.code {
+                KeyCode::Up => {
+                    let idx = self.history_browse_index.map(|i| i + 1).unwrap_or(0);
+                    if let Some(entry) = self.history.get_reverse(idx) {
+                        self.input.set_content(entry);
+                        self.history_browse_index = Some(idx);
+                    }
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+        // Down arrow while browsing history
+        if self.completion.is_none() && self.history_browse_index.is_some() {
+            if key.code == KeyCode::Down {
+                if let Some(idx) = self.history_browse_index {
+                    if idx == 0 {
+                        // Past newest — clear input
+                        self.input.set_content("");
+                        self.history_browse_index = None;
+                    } else {
+                        let new_idx = idx - 1;
+                        if let Some(entry) = self.history.get_reverse(new_idx) {
+                            self.input.set_content(entry);
+                            self.history_browse_index = Some(new_idx);
+                        }
+                    }
+                }
+                return Ok(());
+            }
+        }
+
         // Input handling
         match key.code {
             KeyCode::Enter if !shift => {
                 if !self.input.is_empty() && !self.conversation.is_streaming() {
                     let text = self.input.take_content();
+                    self.history.push(text.clone());
+                    self.history_browse_index = None;
 
                     if let Some(action) = self.handle_local_command(&text) {
                         // Command handled locally
@@ -586,6 +635,7 @@ impl App {
             }
             KeyCode::Char(c) if !ctrl => {
                 self.input.insert_char(c);
+                self.history_browse_index = None;
             }
             KeyCode::Backspace => {
                 self.input.backspace();
@@ -647,7 +697,7 @@ impl App {
             AppMode::ActionMenu(ref mut state)
             | AppMode::ThemePicker(ref mut state)
             | AppMode::SessionPicker(ref mut state) => f(state),
-            AppMode::Normal | AppMode::TextViewer { .. } => {}
+            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } => {}
         }
     }
 
@@ -852,6 +902,79 @@ impl App {
         self.mode = AppMode::SessionPicker(OverlayState::new(items, None));
     }
 
+    fn open_history_search(&mut self) {
+        if self.history.len() == 0 {
+            self.toast = Some(Toast::new("No history yet".to_string()));
+            return;
+        }
+        let matches: Vec<String> = self.history.search("")
+            .into_iter()
+            .map(|(_, e)| e.to_string())
+            .collect();
+        self.mode = AppMode::HistorySearch {
+            query: String::new(),
+            matches,
+            selected: 0,
+        };
+    }
+
+    fn refresh_history_matches(&mut self) {
+        if let AppMode::HistorySearch { ref query, ref mut matches, ref mut selected } = self.mode {
+            *matches = self.history.search(query)
+                .into_iter()
+                .map(|(_, e)| e.to_string())
+                .collect();
+            *selected = (*selected).min(matches.len().saturating_sub(1));
+        }
+    }
+
+    fn handle_key_history_search(&mut self, key: event::KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Enter => {
+                let selected_text = if let AppMode::HistorySearch { ref matches, selected, .. } = self.mode {
+                    matches.get(selected).cloned()
+                } else {
+                    None
+                };
+                self.mode = AppMode::Normal;
+                if let Some(text) = selected_text {
+                    self.input.set_content(&text);
+                }
+            }
+            KeyCode::Up => {
+                if let AppMode::HistorySearch { ref matches, ref mut selected, .. } = self.mode {
+                    if !matches.is_empty() {
+                        *selected = selected.checked_sub(1).unwrap_or(matches.len() - 1);
+                    }
+                }
+            }
+            KeyCode::Down => {
+                if let AppMode::HistorySearch { ref matches, ref mut selected, .. } = self.mode {
+                    if !matches.is_empty() {
+                        *selected = (*selected + 1) % matches.len();
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let AppMode::HistorySearch { ref mut query, .. } = self.mode {
+                    query.pop();
+                }
+                self.refresh_history_matches();
+            }
+            KeyCode::Char(c) => {
+                if let AppMode::HistorySearch { ref mut query, .. } = self.mode {
+                    query.push(c);
+                }
+                self.refresh_history_matches();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn preview_theme(&mut self) {
         if let AppMode::ThemePicker(ref state) = self.mode {
             if let Some(value) = state.selected_value() {
@@ -910,7 +1033,7 @@ impl App {
                     self.resume_session(&session_id).await?;
                 }
             }
-            AppMode::Normal | AppMode::TextViewer { .. } => {}
+            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } => {}
         }
         Ok(())
     }
@@ -1100,7 +1223,7 @@ impl App {
             AppMode::ActionMenu(state) => Some(("Actions", state)),
             AppMode::ThemePicker(state) => Some(("Select Theme", state)),
             AppMode::SessionPicker(state) => Some(("Resume Session", state)),
-            AppMode::Normal | AppMode::TextViewer { .. } => None,
+            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } => None,
         };
 
         // Clamp scroll before rendering
@@ -1136,6 +1259,12 @@ impl App {
             } => Some((title.as_str(), lines.as_slice(), *scroll)),
             _ => None,
         };
+        let history_search = match &self.mode {
+            AppMode::HistorySearch { query, matches, selected } => {
+                Some((query.as_str(), matches.as_slice(), *selected))
+            }
+            _ => None,
+        };
 
         terminal.draw(|frame| {
             ui::render(
@@ -1159,6 +1288,9 @@ impl App {
             }
             if let Some((title, lines, scroll)) = text_viewer {
                 ui::render_text_viewer(frame, title, lines, scroll, theme);
+            }
+            if let Some((query, matches, selected)) = history_search {
+                ui::render_history_search(frame, query, matches, selected, theme);
             }
         })?;
 

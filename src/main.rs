@@ -4,6 +4,7 @@ mod config;
 mod cost;
 mod diff;
 mod git;
+mod history;
 mod keybindings;
 mod pty;
 mod terminal;
