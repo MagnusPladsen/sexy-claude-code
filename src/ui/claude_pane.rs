@@ -6,6 +6,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::claude::conversation::{ContentBlock, Conversation, Message, Role};
 use crate::theme::Theme;
+use crate::ui::markdown;
 
 /// A widget that renders the conversation as a scrollable chat.
 pub struct ClaudePane<'a> {
@@ -90,22 +91,22 @@ impl Widget for ClaudePane<'_> {
 }
 
 #[derive(Debug, Clone)]
-struct StyledSpan {
-    text: String,
-    style: Style,
+pub struct StyledSpan {
+    pub text: String,
+    pub style: Style,
 }
 
 #[derive(Debug, Clone)]
-struct StyledLine {
-    spans: Vec<StyledSpan>,
+pub struct StyledLine {
+    pub spans: Vec<StyledSpan>,
 }
 
 impl StyledLine {
-    fn empty() -> Self {
+    pub fn empty() -> Self {
         Self { spans: Vec::new() }
     }
 
-    fn plain(text: &str, style: Style) -> Self {
+    pub fn plain(text: &str, style: Style) -> Self {
         Self {
             spans: vec![StyledSpan {
                 text: text.to_string(),
@@ -186,141 +187,109 @@ fn render_message(msg: &Message, lines: &mut Vec<StyledLine>, content_width: usi
         }
     }
 
-    let text_style = match msg.role {
-        Role::User => user_text_style(),
-        Role::Assistant => Style::default().fg(theme.secondary),
-    };
+    let indent = "  ";
 
     for block in &msg.content {
         match block {
             ContentBlock::Text(text) => {
                 // Trim leading blank lines to avoid whitespace gap after role label
                 let trimmed = text.trim_start_matches('\n');
-                render_text_block(trimmed, text_style, lines, content_width);
+
+                match msg.role {
+                    Role::Assistant => {
+                        // Use full markdown rendering for assistant messages
+                        let md_lines = markdown::render_markdown(trimmed, theme);
+                        for md_line in &md_lines {
+                            if md_line.spans.is_empty() {
+                                lines.push(StyledLine::empty());
+                            } else {
+                                // Word-wrap each markdown line with indent
+                                wrap_spans(&md_line.spans, indent, lines, content_width);
+                            }
+                        }
+                    }
+                    Role::User => {
+                        // User messages: plain text with wrapping
+                        let style = user_text_style();
+                        for raw_line in trimmed.lines() {
+                            if raw_line.is_empty() {
+                                lines.push(StyledLine::empty());
+                            } else {
+                                let spans = vec![StyledSpan {
+                                    text: raw_line.to_string(),
+                                    style,
+                                }];
+                                wrap_spans(&spans, indent, lines, content_width);
+                            }
+                        }
+                    }
+                }
             }
             ContentBlock::ToolUse { name, input, .. } => {
-                let tool_style = Style::default()
-                    .fg(Color::Rgb(249, 226, 175))
-                    .add_modifier(Modifier::DIM);
-                let summary = if input.len() > 60 {
-                    format!("  [{name}] {}...", &input[..57])
-                } else {
-                    format!("  [{name}] {input}")
-                };
-                lines.push(StyledLine::plain(&summary, tool_style));
+                render_tool_use(name, input, lines, theme);
             }
         }
     }
 }
 
-/// Render a text block with basic formatting and word wrapping.
-fn render_text_block(
-    text: &str,
-    base_style: Style,
-    lines: &mut Vec<StyledLine>,
-    content_width: usize,
-) {
-    let bold_style = base_style.add_modifier(Modifier::BOLD);
-    let code_style = Style::default().fg(Color::Rgb(166, 227, 161));
-    let code_block_style = Style::default().fg(Color::Rgb(180, 190, 220));
-    let header_style = Style::default()
-        .fg(Color::Rgb(203, 166, 247))
+/// Render a tool use block with the tool name in accent color and a parsed primary argument.
+fn render_tool_use(name: &str, input: &str, lines: &mut Vec<StyledLine>, theme: &Theme) {
+    let name_style = Style::default()
+        .fg(theme.accent)
         .add_modifier(Modifier::BOLD);
+    let arg_style = Style::default()
+        .fg(theme.foreground)
+        .add_modifier(Modifier::DIM);
 
-    let indent = "  "; // 2-char indent for message body
-    let mut in_code_block = false;
+    // Extract the primary argument from the tool's JSON input
+    let primary_arg = extract_primary_arg(name, input);
+    let display = primary_arg.as_deref().unwrap_or("");
 
-    for raw_line in text.lines() {
-        // Code block fence
-        if raw_line.trim_start().starts_with("```") {
-            in_code_block = !in_code_block;
-            let fence_style = Style::default()
-                .fg(Color::Rgb(127, 132, 156))
-                .add_modifier(Modifier::DIM);
-            lines.push(StyledLine::plain(&format!("{indent}{raw_line}"), fence_style));
-            continue;
-        }
+    // Truncate long arguments
+    let truncated = if display.len() > 60 {
+        format!("{}...", &display[..57])
+    } else {
+        display.to_string()
+    };
 
-        if in_code_block {
-            // Code blocks: preserve exact formatting, just indent
-            lines.push(StyledLine::plain(
-                &format!("{indent}{raw_line}"),
-                code_block_style,
-            ));
-            continue;
-        }
-
-        // Headers
-        if raw_line.starts_with('#') {
-            lines.push(StyledLine::plain(
-                &format!("{indent}{raw_line}"),
-                header_style,
-            ));
-            continue;
-        }
-
-        // Empty line
-        if raw_line.is_empty() {
-            lines.push(StyledLine::empty());
-            continue;
-        }
-
-        // Normal text with inline formatting — parse into spans then wrap
-        let parsed_spans = parse_inline_formatting(raw_line, base_style, bold_style, code_style);
-        wrap_spans(&parsed_spans, indent, lines, content_width);
+    let mut spans = vec![
+        StyledSpan {
+            text: format!("  > {name}"),
+            style: name_style,
+        },
+    ];
+    if !truncated.is_empty() {
+        spans.push(StyledSpan {
+            text: format!(": {truncated}"),
+            style: arg_style,
+        });
     }
+    lines.push(StyledLine { spans });
 }
 
-/// Parse inline formatting (**bold**, `code`) into styled spans.
-fn parse_inline_formatting(
-    text: &str,
-    text_style: Style,
-    bold_style: Style,
-    code_style: Style,
-) -> Vec<StyledSpan> {
-    let mut spans = Vec::new();
-    let mut remaining = text;
+/// Extract the most relevant argument from a tool's JSON input.
+fn extract_primary_arg(tool_name: &str, input: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(input).ok()?;
+    let obj = value.as_object()?;
 
-    while !remaining.is_empty() {
-        if remaining.starts_with("**") {
-            if let Some(end) = remaining[2..].find("**") {
-                spans.push(StyledSpan {
-                    text: remaining[2..2 + end].to_string(),
-                    style: bold_style,
-                });
-                remaining = &remaining[2 + end + 2..];
-                continue;
+    // Try tool-specific keys first, then common ones
+    let key = match tool_name {
+        "Bash" => "command",
+        "Read" | "Write" | "Edit" | "Glob" => "file_path",
+        "Grep" => "pattern",
+        _ => {
+            // Try common key names
+            for k in ["file_path", "command", "path", "pattern", "query", "url"] {
+                if let Some(v) = obj.get(k) {
+                    return Some(v.as_str().unwrap_or(&v.to_string()).to_string());
+                }
             }
+            return None;
         }
-        if remaining.starts_with('`') {
-            if let Some(end) = remaining[1..].find('`') {
-                spans.push(StyledSpan {
-                    text: remaining[1..1 + end].to_string(),
-                    style: code_style,
-                });
-                remaining = &remaining[1 + end + 1..];
-                continue;
-            }
-        }
-        let next_special = remaining
-            .find(['*', '`'])
-            .unwrap_or(remaining.len());
-        if next_special > 0 {
-            spans.push(StyledSpan {
-                text: remaining[..next_special].to_string(),
-                style: text_style,
-            });
-            remaining = &remaining[next_special..];
-        } else {
-            spans.push(StyledSpan {
-                text: remaining[..1].to_string(),
-                style: text_style,
-            });
-            remaining = &remaining[1..];
-        }
-    }
+    };
 
-    spans
+    obj.get(key)
+        .map(|v| v.as_str().unwrap_or(&v.to_string()).to_string())
 }
 
 /// Word-wrap a list of styled spans to fit within `max_width`, prepending `indent` to each line.
@@ -522,8 +491,8 @@ mod tests {
             )],
         });
         let lines = render_conversation(&conv, 80, &theme);
-        // label + code fence + code + code fence + "Done." + blank = at least 6 lines
-        assert!(lines.len() >= 6);
+        // label + paragraph + fence + code + fence + "Done." = at least 5 lines
+        assert!(lines.len() >= 5, "Got {} lines", lines.len());
     }
 
     #[test]
@@ -544,7 +513,30 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .map(|s| s.text.as_str())
             .collect();
-        assert!(all_text.contains("[Bash]"));
+        assert!(all_text.contains("Bash"), "Expected tool name 'Bash' in output");
+        assert!(all_text.contains("ls"), "Expected command 'ls' in output");
+    }
+
+    #[test]
+    fn test_tool_use_read_rendering() {
+        let mut conv = Conversation::new();
+        let theme = crate::theme::Theme::default_theme();
+        conv.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "t2".to_string(),
+                name: "Read".to_string(),
+                input: "{\"file_path\":\"src/main.rs\"}".to_string(),
+            }],
+        });
+        let lines = render_conversation(&conv, 80, &theme);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(all_text.contains("Read"));
+        assert!(all_text.contains("src/main.rs"));
     }
 
     #[test]
@@ -607,5 +599,23 @@ mod tests {
         let area = Rect::new(0, 0, 0, 0);
         let mut buf = Buffer::empty(area);
         pane.render(area, &mut buf);
+    }
+
+    #[test]
+    fn test_extract_primary_arg_bash() {
+        let arg = extract_primary_arg("Bash", r#"{"command":"ls -la"}"#);
+        assert_eq!(arg.as_deref(), Some("ls -la"));
+    }
+
+    #[test]
+    fn test_extract_primary_arg_read() {
+        let arg = extract_primary_arg("Read", r#"{"file_path":"src/main.rs"}"#);
+        assert_eq!(arg.as_deref(), Some("src/main.rs"));
+    }
+
+    #[test]
+    fn test_extract_primary_arg_invalid_json() {
+        let arg = extract_primary_arg("Bash", "not json");
+        assert!(arg.is_none());
     }
 }

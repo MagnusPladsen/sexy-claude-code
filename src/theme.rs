@@ -167,6 +167,22 @@ impl Theme {
         PathBuf::from("themes").join(filename)
     }
 
+    /// Return the best-matching syntect theme name for syntax highlighting.
+    pub fn syntax_theme_name(&self) -> &'static str {
+        // Check for Catppuccin Mocha specifically
+        if self.name.contains("Mocha") {
+            return "base16-mocha.dark";
+        }
+        // Determine light vs dark by background luminance
+        if let Color::Rgb(r, g, b) = self.background {
+            let luminance = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+            if luminance > 128.0 {
+                return "InspiredGitHub";
+            }
+        }
+        "base16-ocean.dark"
+    }
+
     fn from_toml(content: &str) -> Result<Self> {
         let file: ThemeFile =
             toml::from_str(content).with_context(|| "Failed to parse theme TOML")?;
