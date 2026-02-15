@@ -427,3 +427,77 @@ pub fn render_history_search(
         }
     }
 }
+
+/// Render a text input popup for single-line text entry (e.g. session rename).
+pub fn render_text_input(
+    frame: &mut Frame,
+    prompt: &str,
+    value: &str,
+    cursor: usize,
+    theme: &Theme,
+) {
+    let area = frame.area();
+
+    // Small centered popup: ~50% width, 5 rows (border + prompt + input + hint + border)
+    let width = (area.width * 50 / 100).max(30).min(area.width.saturating_sub(4));
+    let height: u16 = 5;
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = Rect::new(x, y, width, height);
+
+    let buf = frame.buffer_mut();
+    Clear.render(popup, buf);
+
+    let block = Block::default()
+        .title(format!(" {} ", prompt))
+        .title_style(Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))
+        .title_bottom(" Enter to confirm | Esc to cancel ")
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(theme.border_focused))
+        .style(Style::default().bg(theme.surface).fg(theme.foreground));
+
+    let inner = block.inner(popup);
+    block.render(popup, buf);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    // Fill inner background
+    let bg_style = Style::default().bg(theme.surface).fg(theme.foreground);
+    for row in inner.y..inner.bottom() {
+        for col in inner.x..inner.right() {
+            if let Some(cell) = buf.cell_mut((col, row)) {
+                cell.set_char(' ');
+                cell.set_style(bg_style);
+            }
+        }
+    }
+
+    // Render value text on first inner row
+    let text_y = inner.y;
+    let text_style = Style::default().fg(theme.foreground).bg(theme.surface);
+    let cursor_style = Style::default().fg(theme.surface).bg(theme.primary);
+
+    let mut col = inner.x;
+    for (i, ch) in value.chars().enumerate() {
+        if col >= inner.right() {
+            break;
+        }
+        let style = if i == cursor { cursor_style } else { text_style };
+        if let Some(cell) = buf.cell_mut((col, text_y)) {
+            cell.set_char(ch);
+            cell.set_style(style);
+        }
+        col += 1;
+    }
+
+    // Show cursor at end if cursor == value length
+    if cursor >= value.len() && col < inner.right() {
+        if let Some(cell) = buf.cell_mut((col, text_y)) {
+            cell.set_char(' ');
+            cell.set_style(cursor_style);
+        }
+    }
+}
