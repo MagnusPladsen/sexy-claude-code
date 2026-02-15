@@ -501,12 +501,13 @@ impl App {
                             claude.send_message(&text).await?;
                         }
                     } else {
-                        // Normal user message
+                        // Normal user message — expand @file mentions before sending
                         self.conversation.push_user_message(text.clone());
                         self.auto_scroll = true;
                         self.scroll_to_bottom();
+                        let expanded = expand_file_mentions(&text);
                         if let Some(ref mut claude) = self.claude {
-                            claude.send_message(&text).await?;
+                            claude.send_message(&expanded).await?;
                         }
                     }
                 }
@@ -885,6 +886,71 @@ impl App {
     }
 }
 
+/// Expand `@path/to/file` mentions in user input by reading the referenced files
+/// and prepending their content. The original mention remains in the text so Claude
+/// knows which file was referenced.
+///
+/// Rules:
+/// - `@` must be preceded by whitespace or be at the start of the text
+/// - The path extends until the next whitespace or end of text
+/// - Only existing files are expanded; non-existent paths are left as-is
+fn expand_file_mentions(text: &str) -> String {
+    use std::path::Path;
+
+    // Quick bail — no @ means nothing to expand
+    if !text.contains('@') {
+        return text.to_string();
+    }
+
+    let mut file_contents: Vec<(String, String)> = Vec::new();
+
+    // Find @mentions: look for @ preceded by whitespace or at start
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '@' {
+            let at_start = i == 0;
+            let after_space = i > 0 && chars[i - 1].is_whitespace();
+            if at_start || after_space {
+                // Extract the path: everything until next whitespace
+                let start = i + 1;
+                let mut end = start;
+                while end < chars.len() && !chars[end].is_whitespace() {
+                    end += 1;
+                }
+                if end > start {
+                    let path_str: String = chars[start..end].iter().collect();
+                    let path = Path::new(&path_str);
+                    if path.exists() && path.is_file() {
+                        if let Ok(content) = std::fs::read_to_string(path) {
+                            // Limit to 100KB to avoid massive context injection
+                            let truncated = if content.len() > 100_000 {
+                                format!("{}...\n[truncated, file is {} bytes]", &content[..100_000], content.len())
+                            } else {
+                                content
+                            };
+                            file_contents.push((path_str, truncated));
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    if file_contents.is_empty() {
+        return text.to_string();
+    }
+
+    // Build expanded text: file contents first, then original message
+    let mut expanded = String::new();
+    for (path, content) in &file_contents {
+        expanded.push_str(&format!("<file path=\"{path}\">\n{content}\n</file>\n\n"));
+    }
+    expanded.push_str(text);
+    expanded
+}
+
 fn event_reader_loop(tx: mpsc::UnboundedSender<Msg>) {
     loop {
         match event::read() {
@@ -901,5 +967,61 @@ fn event_reader_loop(tx: mpsc::UnboundedSender<Msg>) {
             Ok(_) => {}
             Err(_) => break,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_expand_file_mentions_no_mentions() {
+        assert_eq!(expand_file_mentions("hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_expand_file_mentions_nonexistent_file() {
+        // Non-existent file should be left as-is
+        assert_eq!(
+            expand_file_mentions("check @/nonexistent/path/xyz.rs"),
+            "check @/nonexistent/path/xyz.rs"
+        );
+    }
+
+    #[test]
+    fn test_expand_file_mentions_email_not_expanded() {
+        // Email addresses should NOT be treated as file mentions
+        assert_eq!(
+            expand_file_mentions("send to user@example.com"),
+            "send to user@example.com"
+        );
+    }
+
+    #[test]
+    fn test_expand_file_mentions_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "file contents here").unwrap();
+        let path_str = file_path.to_str().unwrap();
+
+        let input = format!("read @{path_str} please");
+        let expanded = expand_file_mentions(&input);
+
+        assert!(expanded.contains("<file path="), "Expected file tag");
+        assert!(expanded.contains("file contents here"), "Expected file contents");
+        assert!(expanded.contains(&input), "Expected original text preserved");
+    }
+
+    #[test]
+    fn test_expand_file_mentions_at_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("start.txt");
+        std::fs::write(&file_path, "start content").unwrap();
+        let path_str = file_path.to_str().unwrap();
+
+        let input = format!("@{path_str}");
+        let expanded = expand_file_mentions(&input);
+
+        assert!(expanded.contains("start content"), "Expected file contents");
     }
 }
