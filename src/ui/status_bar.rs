@@ -3,6 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Widget;
 
+use crate::git::GitInfo;
 use crate::theme::Theme;
 
 pub struct StatusBar<'a> {
@@ -10,6 +11,7 @@ pub struct StatusBar<'a> {
     theme: &'a Theme,
     input_tokens: u64,
     output_tokens: u64,
+    git_info: &'a GitInfo,
 }
 
 impl<'a> StatusBar<'a> {
@@ -18,12 +20,14 @@ impl<'a> StatusBar<'a> {
         theme: &'a Theme,
         input_tokens: u64,
         output_tokens: u64,
+        git_info: &'a GitInfo,
     ) -> Self {
         Self {
             theme_name,
             theme,
             input_tokens,
             output_tokens,
+            git_info,
         }
     }
 }
@@ -37,6 +41,21 @@ fn format_tokens(count: u64) -> String {
     } else {
         count.to_string()
     }
+}
+
+/// Write a string into the buffer at (start_x, y) with the given style.
+/// Returns the x position after the last written character.
+fn write_str(buf: &mut Buffer, text: &str, x_start: u16, y: u16, x_limit: u16, style: Style) -> u16 {
+    let mut x = x_start;
+    for ch in text.chars() {
+        if x >= x_limit {
+            break;
+        }
+        buf[(x, y)].set_symbol(&ch.to_string());
+        buf[(x, y)].set_style(style);
+        x += 1;
+    }
+    x
 }
 
 impl<'a> Widget for StatusBar<'a> {
@@ -56,13 +75,22 @@ impl<'a> Widget for StatusBar<'a> {
         let left_style = Style::default()
             .fg(self.theme.primary)
             .bg(self.theme.status_bg);
-        for (i, ch) in left.chars().enumerate() {
-            let x = area.x + i as u16;
-            if x >= area.right() {
-                break;
-            }
-            buf[(x, area.y)].set_symbol(&ch.to_string());
-            buf[(x, area.y)].set_style(left_style);
+        let mut left_end = write_str(buf, left, area.x, area.y, area.right(), left_style);
+
+        // Git branch info (right after app name)
+        if let Some(display) = self.git_info.display() {
+            let sep = " | ";
+            left_end = write_str(buf, sep, left_end, area.y, area.right(), style);
+
+            let git_color = if self.git_info.is_dirty() {
+                self.theme.warning
+            } else {
+                self.theme.success
+            };
+            let git_style = Style::default()
+                .fg(git_color)
+                .bg(self.theme.status_bg);
+            write_str(buf, &display, left_end, area.y, area.right(), git_style);
         }
 
         // Center: theme name + token usage
@@ -77,26 +105,12 @@ impl<'a> Widget for StatusBar<'a> {
             format!(" {} ", self.theme_name)
         };
         let center_start = area.x + (area.width.saturating_sub(center.len() as u16)) / 2;
-        for (i, ch) in center.chars().enumerate() {
-            let x = center_start + i as u16;
-            if x >= area.right() {
-                break;
-            }
-            buf[(x, area.y)].set_symbol(&ch.to_string());
-            buf[(x, area.y)].set_style(style);
-        }
+        write_str(buf, &center, center_start, area.y, area.right(), style);
 
         // Right: help hint
         let right = "Ctrl+K: menu | Ctrl+T: theme | Ctrl+Q: quit ";
         let right_start = area.right().saturating_sub(right.len() as u16);
-        for (i, ch) in right.chars().enumerate() {
-            let x = right_start + i as u16;
-            if x >= area.right() {
-                break;
-            }
-            buf[(x, area.y)].set_symbol(&ch.to_string());
-            buf[(x, area.y)].set_style(style);
-        }
+        write_str(buf, right, right_start, area.y, area.right(), style);
     }
 }
 

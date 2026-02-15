@@ -16,6 +16,7 @@ use ratatui::Frame;
 
 use crate::app::CompletionState;
 use crate::claude::conversation::Conversation;
+use crate::git::GitInfo;
 use crate::theme::Theme;
 use crate::ui::toast::Toast;
 use claude_pane::ClaudePane;
@@ -38,6 +39,7 @@ pub fn render(
     completion: Option<&CompletionState>,
     toast: Option<&Toast>,
     token_usage: (u64, u64),
+    git_info: &GitInfo,
 ) {
     let size = frame.area();
 
@@ -83,7 +85,7 @@ pub fn render(
 
     // Status bar
     frame.render_widget(
-        StatusBar::new(&theme.name, theme, token_usage.0, token_usage.1),
+        StatusBar::new(&theme.name, theme, token_usage.0, token_usage.1, git_info),
         chunks[3],
     );
 
