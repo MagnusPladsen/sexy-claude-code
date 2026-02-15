@@ -6,6 +6,7 @@ use ratatui::DefaultTerminal;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+use crate::claude::commands::{self, CustomCommand};
 use crate::claude::conversation::Conversation;
 use crate::claude::events::StreamEvent;
 use crate::claude::process::ClaudeProcess;
@@ -91,6 +92,7 @@ pub struct App {
     auto_scroll: bool,
     command: String,
     slash_commands: Vec<String>,
+    custom_commands: Vec<CustomCommand>,
     completion: Option<CompletionState>,
     /// Tracks the last slash command sent, so we can show feedback for empty results.
     pending_slash_command: Option<String>,
@@ -114,6 +116,7 @@ impl App {
             auto_scroll: true,
             command,
             slash_commands: Vec::new(),
+            custom_commands: commands::load_all_commands(),
             completion: None,
             pending_slash_command: None,
             toast: None,
@@ -322,6 +325,14 @@ impl App {
                                 self.auto_scroll = true;
                             }
                         }
+                    } else if let Some(prompt) = self.resolve_custom_command(&text) {
+                        // Custom command — substitute args and send as user message
+                        self.conversation.push_user_message(prompt.clone());
+                        self.auto_scroll = true;
+                        self.scroll_to_bottom();
+                        if let Some(ref mut claude) = self.claude {
+                            claude.send_message(&prompt).await?;
+                        }
                     } else if text.starts_with('/') {
                         // Slash command — send to Claude but don't add as user message
                         self.pending_slash_command = Some(text.clone());
@@ -417,6 +428,33 @@ impl App {
         Ok(())
     }
 
+    /// Build a unified list of completion items from slash commands and custom commands.
+    fn all_completion_items(&self) -> Vec<CompletionItem> {
+        let mut items: Vec<CompletionItem> = self
+            .slash_commands
+            .iter()
+            .map(|cmd| CompletionItem {
+                name: cmd.clone(),
+                description: String::new(),
+                score: 0,
+            })
+            .collect();
+
+        for cmd in &self.custom_commands {
+            // Skip if a built-in slash command already has this name
+            if items.iter().any(|i| i.name == cmd.name) {
+                continue;
+            }
+            items.push(CompletionItem {
+                name: cmd.name.clone(),
+                description: cmd.description.clone(),
+                score: 0,
+            });
+        }
+
+        items
+    }
+
     /// Update slash command completions based on current input text using fuzzy matching.
     fn update_completions(&mut self) {
         let content = self.input.content();
@@ -426,35 +464,25 @@ impl App {
         }
 
         let query = &content[1..]; // strip the leading '/'
+        let all_items = self.all_completion_items();
+
         if query.is_empty() {
             // Show all commands when just "/" is typed
-            let matches: Vec<CompletionItem> = self
-                .slash_commands
-                .iter()
-                .map(|cmd| CompletionItem {
-                    name: cmd.clone(),
-                    description: String::new(),
-                    score: 0,
-                })
-                .collect();
-            if matches.is_empty() {
+            if all_items.is_empty() {
                 self.completion = None;
             } else {
-                self.completion = Some(CompletionState::new(matches));
+                self.completion = Some(CompletionState::new(all_items));
             }
             return;
         }
 
         let matcher = SkimMatcherV2::default();
-        let mut matches: Vec<CompletionItem> = self
-            .slash_commands
-            .iter()
-            .filter_map(|cmd| {
-                matcher.fuzzy_match(cmd, query).map(|score| CompletionItem {
-                    name: cmd.clone(),
-                    description: String::new(),
-                    score,
-                })
+        let mut matches: Vec<CompletionItem> = all_items
+            .into_iter()
+            .filter_map(|item| {
+                matcher
+                    .fuzzy_match(&item.name, query)
+                    .map(|score| CompletionItem { score, ..item })
             })
             .collect();
 
@@ -474,6 +502,26 @@ impl App {
             state.selected = prev_selected.min(state.matches.len().saturating_sub(1));
             self.completion = Some(state);
         }
+    }
+
+    /// Check if the input matches a custom command. Returns the rendered prompt if so.
+    ///
+    /// Format: `/command-name optional arguments here`
+    fn resolve_custom_command(&self, text: &str) -> Option<String> {
+        if !text.starts_with('/') {
+            return None;
+        }
+
+        let without_slash = &text[1..];
+        let (cmd_name, args) = match without_slash.find(' ') {
+            Some(pos) => (&without_slash[..pos], without_slash[pos + 1..].trim()),
+            None => (without_slash, ""),
+        };
+
+        self.custom_commands
+            .iter()
+            .find(|c| c.name == cmd_name)
+            .map(|c| c.render(args))
     }
 
     /// Check if the input is a command that should be handled locally.
