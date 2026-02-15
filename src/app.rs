@@ -12,6 +12,7 @@ use crate::claude::events::StreamEvent;
 use crate::claude::process::{ClaudeProcess, SpawnOptions};
 use crate::claude::sessions;
 use crate::config::Config;
+use crate::git::GitInfo;
 use crate::theme::Theme;
 use crate::ui;
 use crate::ui::header::HEADER_HEIGHT;
@@ -115,6 +116,10 @@ pub struct App {
     effort_override: Option<String>,
     /// Budget override from CLI args.
     budget_override: Option<f64>,
+    /// Current git repo info (branch, dirty count).
+    git_info: GitInfo,
+    /// Frame counter at last git refresh (refresh every ~5s).
+    git_last_refresh: u64,
 }
 
 impl App {
@@ -154,6 +159,8 @@ impl App {
             model_override,
             effort_override,
             budget_override,
+            git_info: GitInfo::gather(),
+            git_last_refresh: 0,
         }
     }
 
@@ -390,6 +397,12 @@ impl App {
                 // Expire toast notifications
                 if self.toast.as_ref().is_some_and(|t| t.is_expired()) {
                     self.toast = None;
+                }
+                // Refresh git info every ~5 seconds
+                let refresh_interval = (self.config.fps as u64) * 5;
+                if self.frame_count - self.git_last_refresh >= refresh_interval {
+                    self.git_info = GitInfo::gather();
+                    self.git_last_refresh = self.frame_count;
                 }
             }
         }
@@ -874,6 +887,7 @@ impl App {
         let completion = self.completion.as_ref();
         let toast = self.toast.as_ref();
         let token_usage = (self.total_input_tokens, self.total_output_tokens);
+        let git_info = &self.git_info;
 
         terminal.draw(|frame| {
             ui::render(
@@ -887,6 +901,7 @@ impl App {
                 completion,
                 toast,
                 token_usage,
+                git_info,
             );
             if let Some((title, state)) = overlay {
                 ui::render_overlay(frame, title, state, theme);

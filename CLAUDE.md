@@ -32,6 +32,13 @@ cargo test           # Run all tests
 cargo run            # Run with default settings
 ```
 
+## Planning Rules
+
+When creating any implementation plan:
+
+1. **Check GitHub issues first** — Run `gh issue list` to find relevant open issues. Pull details from related issues. If an issue maps to a plan task, reference it. Move issues to "done" when completed.
+2. **Iterate 3 times** — After drafting the plan, review it 3 times. Each iteration: ask the user multiple clarifying questions about scope, edge cases, trade-offs, and priorities before finalizing.
+
 ## Binary Names
 
 Both `sexy-claude` and `sc` are valid binary names for this project.
