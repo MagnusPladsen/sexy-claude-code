@@ -238,7 +238,12 @@ fn render_message(msg: &Message, lines: &mut Vec<StyledLine>, content_width: usi
                 }
             }
             ContentBlock::ToolUse { id, name, input } => {
-                render_tool_use(name, input, lines, theme);
+                // Check if the matching result is an error so we can mark the header
+                let result_is_error = matches!(
+                    tool_results.get(id.as_str()),
+                    Some(ContentBlock::ToolResult { is_error: true, .. })
+                );
+                render_tool_use(name, input, result_is_error, lines, theme);
                 // Render matching tool result inline after the tool use
                 if let Some(ContentBlock::ToolResult {
                     content,
@@ -258,10 +263,23 @@ fn render_message(msg: &Message, lines: &mut Vec<StyledLine>, content_width: usi
 }
 
 /// Render a tool use block with the tool name in accent color and a parsed primary argument.
-fn render_tool_use(name: &str, input: &str, lines: &mut Vec<StyledLine>, theme: &Theme) {
-    let name_style = Style::default()
-        .fg(theme.accent)
-        .add_modifier(Modifier::BOLD);
+/// If `is_error` is true, a failure indicator is appended to the header line.
+fn render_tool_use(
+    name: &str,
+    input: &str,
+    is_error: bool,
+    lines: &mut Vec<StyledLine>,
+    theme: &Theme,
+) {
+    let name_style = if is_error {
+        Style::default()
+            .fg(theme.error)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD)
+    };
     let arg_style = Style::default()
         .fg(theme.foreground)
         .add_modifier(Modifier::DIM);
@@ -277,16 +295,22 @@ fn render_tool_use(name: &str, input: &str, lines: &mut Vec<StyledLine>, theme: 
         display.to_string()
     };
 
-    let mut spans = vec![
-        StyledSpan {
-            text: format!("  > {name}"),
-            style: name_style,
-        },
-    ];
+    let mut spans = vec![StyledSpan {
+        text: format!("  > {name}"),
+        style: name_style,
+    }];
     if !truncated.is_empty() {
         spans.push(StyledSpan {
             text: format!(": {truncated}"),
             style: arg_style,
+        });
+    }
+    if is_error {
+        spans.push(StyledSpan {
+            text: " ✗".to_string(),
+            style: Style::default()
+                .fg(theme.error)
+                .add_modifier(Modifier::BOLD),
         });
     }
     lines.push(StyledLine { spans });
@@ -314,6 +338,18 @@ fn render_tool_result(
             .fg(theme.foreground)
             .add_modifier(Modifier::DIM)
     };
+
+    // Show error label before content
+    if is_error {
+        lines.push(StyledLine {
+            spans: vec![StyledSpan {
+                text: "    ✗ Error".to_string(),
+                style: Style::default()
+                    .fg(theme.error)
+                    .add_modifier(Modifier::BOLD),
+            }],
+        });
+    }
 
     let total_lines = content.lines().count();
 
@@ -696,7 +732,7 @@ mod tests {
                 },
                 ContentBlock::ToolResult {
                     tool_use_id: "t1".to_string(),
-                    content: "Error: command failed".to_string(),
+                    content: "command failed".to_string(),
                     is_error: true,
                     collapsed: false,
                 },
@@ -708,13 +744,33 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .map(|s| s.text.as_str())
             .collect();
-        assert!(all_text.contains("Error: command failed"));
-        // Verify error styling — the result line should use theme.error color
-        let result_line = lines.iter().find(|l| {
-            l.spans.iter().any(|s| s.text.contains("Error: command failed"))
+        // Tool header should show error indicator
+        assert!(all_text.contains("Bash"), "Expected tool name");
+        assert!(all_text.contains("✗"), "Expected error indicator on tool header");
+        // Error label should appear before content
+        assert!(all_text.contains("✗ Error"), "Expected error label");
+        // Tool header should use error color
+        let header_line = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.text.contains("Bash")))
+            .expect("Expected tool header line");
+        let name_span = header_line
+            .spans
+            .iter()
+            .find(|s| s.text.contains("Bash"))
+            .unwrap();
+        assert_eq!(name_span.style.fg, Some(theme.error));
+        // Content should use error color
+        let content_line = lines.iter().find(|l| {
+            l.spans.iter().any(|s| s.text.contains("command failed"))
         });
-        assert!(result_line.is_some(), "Expected a line with error content");
-        let error_span = result_line.unwrap().spans.iter().find(|s| s.text.contains("Error:")).unwrap();
+        assert!(content_line.is_some(), "Expected a line with error content");
+        let error_span = content_line
+            .unwrap()
+            .spans
+            .iter()
+            .find(|s| s.text.contains("command failed"))
+            .unwrap();
         assert_eq!(error_span.style.fg, Some(theme.error));
     }
 
