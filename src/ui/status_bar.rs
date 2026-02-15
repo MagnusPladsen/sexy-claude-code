@@ -6,6 +6,9 @@ use ratatui::widgets::Widget;
 use crate::git::GitInfo;
 use crate::theme::Theme;
 
+/// Default context window size in tokens (Claude's 200k window).
+const CONTEXT_WINDOW_TOKENS: u64 = 200_000;
+
 pub struct StatusBar<'a> {
     theme_name: &'a str,
     theme: &'a Theme,
@@ -41,6 +44,16 @@ fn format_tokens(count: u64) -> String {
     } else {
         count.to_string()
     }
+}
+
+/// Build a context budget bar string like "▓▓▓▓▓░░░░░" for the given usage ratio.
+/// Returns (bar_string, fill_ratio) where fill_ratio is 0.0..=1.0.
+fn context_bar(total_tokens: u64, bar_width: usize) -> (String, f64) {
+    let ratio = (total_tokens as f64 / CONTEXT_WINDOW_TOKENS as f64).min(1.0);
+    let filled = (ratio * bar_width as f64).round() as usize;
+    let empty = bar_width.saturating_sub(filled);
+    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
+    (bar, ratio)
 }
 
 /// Write a string into the buffer at (start_x, y) with the given style.
@@ -93,19 +106,46 @@ impl<'a> Widget for StatusBar<'a> {
             write_str(buf, &display, left_end, area.y, area.right(), git_style);
         }
 
-        // Center: theme name + token usage
-        let center = if self.input_tokens > 0 || self.output_tokens > 0 {
+        // Center: theme name + token usage + context bar
+        let total_tokens = self.input_tokens + self.output_tokens;
+        let has_usage = total_tokens > 0;
+
+        let center_text = if has_usage {
+            let pct = ((total_tokens as f64 / CONTEXT_WINDOW_TOKENS as f64) * 100.0).min(100.0);
             format!(
-                " {} | {} in / {} out ",
+                " {} | {} in / {} out | {:.0}% ",
                 self.theme_name,
                 format_tokens(self.input_tokens),
                 format_tokens(self.output_tokens),
+                pct,
             )
         } else {
             format!(" {} ", self.theme_name)
         };
-        let center_start = area.x + (area.width.saturating_sub(center.len() as u16)) / 2;
-        write_str(buf, &center, center_start, area.y, area.right(), style);
+
+        // Calculate bar width and center position
+        let bar_width: usize = if has_usage { 10 } else { 0 };
+        let total_center_len = center_text.len() + bar_width;
+        let center_start = area.x + (area.width.saturating_sub(total_center_len as u16)) / 2;
+
+        // Write center text
+        let after_text = write_str(buf, &center_text, center_start, area.y, area.right(), style);
+
+        // Write context bar with color coding
+        if has_usage {
+            let (bar, ratio) = context_bar(total_tokens, bar_width);
+            let bar_color = if ratio < 0.5 {
+                self.theme.success
+            } else if ratio < 0.8 {
+                self.theme.warning
+            } else {
+                self.theme.error
+            };
+            let bar_style = Style::default()
+                .fg(bar_color)
+                .bg(self.theme.status_bg);
+            write_str(buf, &bar, after_text, area.y, area.right(), bar_style);
+        }
 
         // Right: help hint
         let right = "Ctrl+K: menu | Ctrl+T: theme | Ctrl+Q: quit ";
@@ -136,5 +176,33 @@ mod tests {
     fn test_format_tokens_millions() {
         assert_eq!(format_tokens(1_000_000), "1.0M");
         assert_eq!(format_tokens(2_500_000), "2.5M");
+    }
+
+    #[test]
+    fn test_context_bar_empty() {
+        let (bar, ratio) = context_bar(0, 10);
+        assert_eq!(bar, "░░░░░░░░░░");
+        assert!((ratio - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_context_bar_half() {
+        let (bar, ratio) = context_bar(100_000, 10);
+        assert_eq!(bar, "█████░░░░░");
+        assert!((ratio - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_context_bar_full() {
+        let (bar, ratio) = context_bar(200_000, 10);
+        assert_eq!(bar, "██████████");
+        assert!((ratio - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_context_bar_over_limit_capped() {
+        let (bar, ratio) = context_bar(300_000, 10);
+        assert_eq!(bar, "██████████");
+        assert!((ratio - 1.0).abs() < f64::EPSILON);
     }
 }
