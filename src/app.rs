@@ -471,6 +471,11 @@ impl App {
             return Ok(());
         }
 
+        if ctrl && key.code == KeyCode::Char('d') {
+            self.open_diff_viewer();
+            return Ok(());
+        }
+
         // Scrolling
         match key.code {
             KeyCode::PageUp => {
@@ -911,6 +916,68 @@ impl App {
         let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
         self.mode = AppMode::TextViewer {
             title: "CLAUDE.md".to_string(),
+            lines,
+            scroll: 0,
+        };
+    }
+
+    fn open_diff_viewer(&mut self) {
+        use crate::claude::conversation::ContentBlock;
+
+        // Collect all Edit tool diffs from the conversation
+        let mut diff_text = String::new();
+        for msg in &self.conversation.messages {
+            for block in &msg.content {
+                if let ContentBlock::ToolUse { name, input, .. } = block {
+                    if name == "Edit" {
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(input) {
+                            let file_path = value
+                                .get("file_path")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown");
+                            let old = value
+                                .get("old_string")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let new = value
+                                .get("new_string")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+
+                            if !old.is_empty() || !new.is_empty() {
+                                diff_text.push_str(&format!("--- {file_path}\n+++ {file_path}\n"));
+                                let ops = crate::diff::diff_lines(old, new);
+                                diff_text.push_str(&crate::diff::format_unified(&ops));
+                                diff_text.push('\n');
+                            }
+                        }
+                    } else if name == "Write" {
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(input) {
+                            let file_path = value
+                                .get("file_path")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown");
+                            let content = value
+                                .get("content")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let line_count = content.lines().count();
+                            diff_text
+                                .push_str(&format!("+++ {file_path} (new file, {line_count} lines)\n\n"));
+                        }
+                    }
+                }
+            }
+        }
+
+        if diff_text.is_empty() {
+            self.toast = Some(Toast::new("No file changes in this session".to_string()));
+            return;
+        }
+
+        let lines: Vec<String> = diff_text.lines().map(|l| l.to_string()).collect();
+        self.mode = AppMode::TextViewer {
+            title: "Session Diffs".to_string(),
             lines,
             scroll: 0,
         };

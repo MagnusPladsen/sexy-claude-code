@@ -285,14 +285,30 @@ pub fn render_text_viewer(
         .bg(theme.surface)
         .add_modifier(Modifier::BOLD);
     let code_style = Style::default().fg(theme.accent).bg(theme.surface);
+    let diff_add_style = Style::default()
+        .fg(ratatui::style::Color::Rgb(100, 255, 100))
+        .bg(theme.surface);
+    let diff_remove_style = Style::default()
+        .fg(ratatui::style::Color::Rgb(255, 100, 100))
+        .bg(theme.surface);
+    let diff_header_style = Style::default()
+        .fg(theme.info)
+        .bg(theme.surface)
+        .add_modifier(Modifier::BOLD);
 
     for (i, line) in lines.iter().skip(scroll).take(visible).enumerate() {
         let row_y = inner.y + i as u16;
 
-        // Simple markdown-aware styling
-        let style = if line.starts_with('#') {
+        // Context-aware styling: diff lines, markdown headings, code blocks
+        let style = if line.starts_with("+ ") || line.starts_with("+++ ") {
+            diff_add_style
+        } else if line.starts_with("- ") || line.starts_with("--- ") {
+            diff_remove_style
+        } else if line.starts_with("@@ ") {
+            diff_header_style
+        } else if line.starts_with('#') {
             heading_style
-        } else if line.starts_with("```") || line.starts_with("  ") || line.starts_with('\t') {
+        } else if line.starts_with("```") || line.starts_with('\t') {
             code_style
         } else {
             text_style
