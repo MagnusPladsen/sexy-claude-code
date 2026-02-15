@@ -64,7 +64,7 @@ pub fn render(
     let claude_inner = claude_block.inner(chunks[1]);
     frame.render_widget(claude_block, chunks[1]);
     frame.render_widget(
-        ClaudePane::new(conversation, theme, scroll_offset),
+        ClaudePane::new(conversation, theme, scroll_offset, frame_count),
         claude_inner,
     );
 

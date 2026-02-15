@@ -8,19 +8,29 @@ use crate::claude::conversation::{ContentBlock, Conversation, Message, Role};
 use crate::theme::Theme;
 use crate::ui::markdown;
 
+/// Spinner frames for animated progress indicator.
+const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
 /// A widget that renders the conversation as a scrollable chat.
 pub struct ClaudePane<'a> {
     conversation: &'a Conversation,
     theme: &'a Theme,
     scroll_offset: usize,
+    frame_count: u64,
 }
 
 impl<'a> ClaudePane<'a> {
-    pub fn new(conversation: &'a Conversation, theme: &'a Theme, scroll_offset: usize) -> Self {
+    pub fn new(
+        conversation: &'a Conversation,
+        theme: &'a Theme,
+        scroll_offset: usize,
+        frame_count: u64,
+    ) -> Self {
         Self {
             conversation,
             theme,
             scroll_offset,
+            frame_count,
         }
     }
 }
@@ -45,7 +55,26 @@ impl Widget for ClaudePane<'_> {
         }
 
         // Convert conversation to wrapped lines
-        let lines = render_conversation(self.conversation, area.width as usize, self.theme);
+        let mut lines = render_conversation(self.conversation, area.width as usize, self.theme);
+
+        // Show spinner when waiting for tool execution
+        if self.conversation.is_awaiting_tool_result() || self.conversation.is_streaming() {
+            let spinner_char =
+                SPINNER_FRAMES[(self.frame_count as usize / 2) % SPINNER_FRAMES.len()];
+            let label = if self.conversation.is_awaiting_tool_result() {
+                "Running..."
+            } else {
+                "Thinking..."
+            };
+            lines.push(StyledLine {
+                spans: vec![StyledSpan {
+                    text: format!("  {spinner_char} {label}"),
+                    style: Style::default()
+                        .fg(self.theme.info)
+                        .add_modifier(Modifier::DIM),
+                }],
+            });
+        }
 
         // Apply scroll offset
         let visible_lines: Vec<&StyledLine> = lines
@@ -569,7 +598,7 @@ mod tests {
     fn test_empty_conversation_renders() {
         let conv = Conversation::new();
         let theme = crate::theme::Theme::default_theme();
-        let pane = ClaudePane::new(&conv, &theme, 0);
+        let pane = ClaudePane::new(&conv, &theme, 0, 0);
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
         pane.render(area, &mut buf);
@@ -849,7 +878,7 @@ mod tests {
             conv.push_user_message(format!("Message {}", i));
         }
         let theme = crate::theme::Theme::default_theme();
-        let pane = ClaudePane::new(&conv, &theme, 10);
+        let pane = ClaudePane::new(&conv, &theme, 10, 0);
         let area = Rect::new(0, 0, 80, 10);
         let mut buf = Buffer::empty(area);
         pane.render(area, &mut buf);
@@ -859,7 +888,7 @@ mod tests {
     fn test_zero_area() {
         let conv = Conversation::new();
         let theme = crate::theme::Theme::default_theme();
-        let pane = ClaudePane::new(&conv, &theme, 0);
+        let pane = ClaudePane::new(&conv, &theme, 0, 0);
         let area = Rect::new(0, 0, 0, 0);
         let mut buf = Buffer::empty(area);
         pane.render(area, &mut buf);
