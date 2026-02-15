@@ -20,6 +20,12 @@ pub enum StreamEvent {
     },
     /// Result event emitted when a command completes (e.g. slash commands).
     Result { text: String, is_error: bool },
+    /// Tool result from a `{"type":"user"}` envelope after tool execution.
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        is_error: bool,
+    },
     Unknown(String),
 }
 
@@ -53,13 +59,15 @@ struct Envelope {
     slash_commands: Option<Vec<String>>,
     /// Session ID from system.init
     session_id: Option<String>,
-    /// The assistant message when envelope_type == "assistant" (unused but needed for deserialization)
-    #[allow(dead_code)]
-    message: Option<RawAssistantMessage>,
+    /// Generic message field — used by both "assistant" and "user" envelopes.
+    /// Typed as Value because the two formats have different shapes.
+    message: Option<serde_json::Value>,
     /// Result text from "result" envelope (slash command output etc.)
     result: Option<String>,
     /// Whether the result is an error
     is_error: Option<bool>,
+    /// Structured tool result metadata (e.g. file content, line counts).
+    tool_use_result: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -80,23 +88,6 @@ struct RawMessage {
     model: String,
 }
 
-/// Full assistant message (emitted as `{"type":"assistant","message":{...}}`)
-/// Fields are unused but needed for serde deserialization.
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct RawAssistantMessage {
-    id: String,
-    model: String,
-    content: Vec<RawAssistantContentBlock>,
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct RawAssistantContentBlock {
-    #[serde(rename = "type")]
-    block_type: String,
-    text: Option<String>,
-}
 
 #[derive(Deserialize)]
 struct RawContentBlock {
@@ -156,6 +147,8 @@ pub fn parse_event(line: &str) -> StreamEvent {
             let is_error = envelope.is_error.unwrap_or(false);
             StreamEvent::Result { text, is_error }
         }
+        // Tool result from tool execution — emitted as {"type":"user","message":{...}}
+        "user" => parse_tool_result(&envelope, line),
         // Full assistant message — we use streaming events instead
         "assistant" => StreamEvent::Unknown(line.to_string()),
         // Try parsing as a raw event directly (for backwards compatibility / tests)
@@ -167,6 +160,78 @@ pub fn parse_event(line: &str) -> StreamEvent {
             parse_raw_event(raw, line)
         }
     }
+}
+
+/// Parse a tool result from a `{"type":"user"}` envelope.
+///
+/// The envelope carries tool execution results:
+/// ```json
+/// {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"...","content":"..."}]},
+///  "tool_use_result":{"type":"text","file":{"filePath":"...","content":"..."}}}
+/// ```
+///
+/// Prefers clean content from `tool_use_result` metadata when available.
+fn parse_tool_result(envelope: &Envelope, line: &str) -> StreamEvent {
+    let msg = match envelope.message.as_ref() {
+        Some(v) => v,
+        None => return StreamEvent::Unknown(line.to_string()),
+    };
+
+    let content_arr = match msg.get("content").and_then(|c| c.as_array()) {
+        Some(arr) => arr,
+        None => return StreamEvent::Unknown(line.to_string()),
+    };
+
+    // Find the first tool_result in the content array
+    for item in content_arr {
+        if item.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+            continue;
+        }
+
+        let tool_use_id = item
+            .get("tool_use_id")
+            .and_then(|id| id.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        let is_error = item
+            .get("is_error")
+            .and_then(|e| e.as_bool())
+            .unwrap_or(false);
+
+        // Prefer clean content from tool_use_result metadata
+        let content = extract_clean_content(envelope)
+            .or_else(|| {
+                item.get("content")
+                    .and_then(|c| c.as_str())
+                    .map(String::from)
+            })
+            .unwrap_or_default();
+
+        return StreamEvent::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        };
+    }
+
+    StreamEvent::Unknown(line.to_string())
+}
+
+/// Extract clean content from the `tool_use_result` metadata field.
+/// This avoids line-number prefixes present in the raw content.
+fn extract_clean_content(envelope: &Envelope) -> Option<String> {
+    let meta = envelope.tool_use_result.as_ref()?;
+    // File tool results: {"type":"text","file":{"content":"..."}}
+    if let Some(content) = meta.get("file").and_then(|f| f.get("content")).and_then(|c| c.as_str())
+    {
+        return Some(content.to_string());
+    }
+    // Direct text results: {"type":"text","text":"..."}
+    if let Some(content) = meta.get("text").and_then(|t| t.as_str()) {
+        return Some(content.to_string());
+    }
+    None
 }
 
 /// Parse the inner Anthropic streaming event.
@@ -400,6 +465,70 @@ mod tests {
             }
             other => panic!("Expected ContentBlockDelta, got {:?}", other),
         }
+    }
+
+    // --- Tool result events ---
+
+    #[test]
+    fn test_parse_tool_result_with_file_metadata() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_abc","type":"tool_result","content":"     1\u2192hello world\n     2\u2192"}]},"tool_use_result":{"type":"text","file":{"filePath":"/tmp/test.txt","content":"hello world\n","numLines":2,"startLine":1,"totalLines":2}},"session_id":"abc"}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "toolu_abc");
+                // Should use clean content from metadata
+                assert_eq!(content, "hello world\n");
+                assert!(!is_error);
+            }
+            other => panic!("Expected ToolResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_tool_result_without_metadata() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_def","type":"tool_result","content":"command output here"}]},"session_id":"abc"}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "toolu_def");
+                assert_eq!(content, "command output here");
+                assert!(!is_error);
+            }
+            other => panic!("Expected ToolResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_tool_result_error() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_err","type":"tool_result","content":"Error: file not found","is_error":true}]},"session_id":"abc"}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "toolu_err");
+                assert_eq!(content, "Error: file not found");
+                assert!(is_error);
+            }
+            other => panic!("Expected ToolResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_user_event_without_tool_result_is_unknown() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"session_id":"abc"}"#;
+        let event = parse_event(line);
+        assert!(matches!(event, StreamEvent::Unknown(_)));
     }
 
     // --- Edge cases ---

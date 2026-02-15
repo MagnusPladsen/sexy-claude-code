@@ -189,6 +189,18 @@ fn render_message(msg: &Message, lines: &mut Vec<StyledLine>, content_width: usi
 
     let indent = "  ";
 
+    // Build a lookup from tool_use_id → ToolResult for inline rendering
+    let tool_results: std::collections::HashMap<&str, &ContentBlock> = msg
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult { tool_use_id, .. } => {
+                Some((tool_use_id.as_str(), block))
+            }
+            _ => None,
+        })
+        .collect();
+
     for block in &msg.content {
         match block {
             ContentBlock::Text(text) => {
@@ -225,8 +237,21 @@ fn render_message(msg: &Message, lines: &mut Vec<StyledLine>, content_width: usi
                     }
                 }
             }
-            ContentBlock::ToolUse { name, input, .. } => {
+            ContentBlock::ToolUse { id, name, input } => {
                 render_tool_use(name, input, lines, theme);
+                // Render matching tool result inline after the tool use
+                if let Some(ContentBlock::ToolResult {
+                    content,
+                    is_error,
+                    collapsed,
+                    ..
+                }) = tool_results.get(id.as_str())
+                {
+                    render_tool_result(content, *is_error, *collapsed, lines, theme);
+                }
+            }
+            ContentBlock::ToolResult { .. } => {
+                // Rendered inline after the matching ToolUse above
             }
         }
     }
@@ -265,6 +290,61 @@ fn render_tool_use(name: &str, input: &str, lines: &mut Vec<StyledLine>, theme: 
         });
     }
     lines.push(StyledLine { spans });
+}
+
+/// Maximum visible lines before collapsing tool result output.
+const TOOL_RESULT_COLLAPSE_PREVIEW: usize = 20;
+
+/// Render a tool result block inline below its tool use.
+fn render_tool_result(
+    content: &str,
+    is_error: bool,
+    collapsed: bool,
+    lines: &mut Vec<StyledLine>,
+    theme: &Theme,
+) {
+    if content.is_empty() {
+        return;
+    }
+
+    let content_style = if is_error {
+        Style::default().fg(theme.error)
+    } else {
+        Style::default()
+            .fg(theme.foreground)
+            .add_modifier(Modifier::DIM)
+    };
+
+    let total_lines = content.lines().count();
+
+    if collapsed {
+        // Show first N lines with a "more lines" indicator
+        for line_text in content.lines().take(TOOL_RESULT_COLLAPSE_PREVIEW) {
+            lines.push(StyledLine::plain(
+                &format!("    {line_text}"),
+                content_style,
+            ));
+        }
+        if total_lines > TOOL_RESULT_COLLAPSE_PREVIEW {
+            let dim_style = Style::default()
+                .fg(theme.info)
+                .add_modifier(Modifier::DIM);
+            lines.push(StyledLine::plain(
+                &format!(
+                    "    ... {} more lines",
+                    total_lines - TOOL_RESULT_COLLAPSE_PREVIEW
+                ),
+                dim_style,
+            ));
+        }
+    } else {
+        for line_text in content.lines() {
+            lines.push(StyledLine::plain(
+                &format!("    {line_text}"),
+                content_style,
+            ));
+        }
+    }
 }
 
 /// Extract the most relevant argument from a tool's JSON input.
@@ -537,6 +617,130 @@ mod tests {
             .collect();
         assert!(all_text.contains("Read"));
         assert!(all_text.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn test_tool_result_renders_inline() {
+        let mut conv = Conversation::new();
+        let theme = crate::theme::Theme::default_theme();
+        conv.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::ToolUse {
+                    id: "t1".to_string(),
+                    name: "Bash".to_string(),
+                    input: "{\"command\":\"echo hi\"}".to_string(),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "t1".to_string(),
+                    content: "hi\n".to_string(),
+                    is_error: false,
+                    collapsed: false,
+                },
+            ],
+        });
+        let lines = render_conversation(&conv, 80, &theme);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(all_text.contains("Bash"), "Expected tool name");
+        assert!(all_text.contains("hi"), "Expected tool result content");
+    }
+
+    #[test]
+    fn test_tool_result_collapsed_shows_truncated() {
+        let mut conv = Conversation::new();
+        let theme = crate::theme::Theme::default_theme();
+        let long_output = (0..30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        conv.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::ToolUse {
+                    id: "t1".to_string(),
+                    name: "Bash".to_string(),
+                    input: "{\"command\":\"cat big.txt\"}".to_string(),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "t1".to_string(),
+                    content: long_output,
+                    is_error: false,
+                    collapsed: true,
+                },
+            ],
+        });
+        let lines = render_conversation(&conv, 80, &theme);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(all_text.contains("line 0"), "Expected first line");
+        assert!(all_text.contains("line 19"), "Expected line 19 (20th line)");
+        assert!(!all_text.contains("line 20"), "Line 20 should be hidden");
+        assert!(all_text.contains("more lines"), "Expected 'more lines' indicator");
+    }
+
+    #[test]
+    fn test_tool_result_error_styling() {
+        let mut conv = Conversation::new();
+        let theme = crate::theme::Theme::default_theme();
+        conv.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::ToolUse {
+                    id: "t1".to_string(),
+                    name: "Bash".to_string(),
+                    input: "{\"command\":\"false\"}".to_string(),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "t1".to_string(),
+                    content: "Error: command failed".to_string(),
+                    is_error: true,
+                    collapsed: false,
+                },
+            ],
+        });
+        let lines = render_conversation(&conv, 80, &theme);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(all_text.contains("Error: command failed"));
+        // Verify error styling — the result line should use theme.error color
+        let result_line = lines.iter().find(|l| {
+            l.spans.iter().any(|s| s.text.contains("Error: command failed"))
+        });
+        assert!(result_line.is_some(), "Expected a line with error content");
+        let error_span = result_line.unwrap().spans.iter().find(|s| s.text.contains("Error:")).unwrap();
+        assert_eq!(error_span.style.fg, Some(theme.error));
+    }
+
+    #[test]
+    fn test_tool_result_empty_content_hidden() {
+        let mut conv = Conversation::new();
+        let theme = crate::theme::Theme::default_theme();
+        conv.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::ToolUse {
+                    id: "t1".to_string(),
+                    name: "Edit".to_string(),
+                    input: "{\"file_path\":\"test.rs\"}".to_string(),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "t1".to_string(),
+                    content: String::new(),
+                    is_error: false,
+                    collapsed: false,
+                },
+            ],
+        });
+        let lines = render_conversation(&conv, 80, &theme);
+        // Should only have the label + tool use line, no result output
+        assert!(lines.len() <= 3, "Empty result should produce no extra lines, got {}", lines.len());
     }
 
     #[test]
