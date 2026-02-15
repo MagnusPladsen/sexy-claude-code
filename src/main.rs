@@ -23,6 +23,22 @@ struct Cli {
     #[arg(short, long)]
     config: Option<PathBuf>,
 
+    /// Claude model to use (overrides config)
+    #[arg(short, long)]
+    model: Option<String>,
+
+    /// Effort level: low, medium, high (overrides config)
+    #[arg(short, long)]
+    effort: Option<String>,
+
+    /// Maximum budget in USD per session (overrides config)
+    #[arg(long)]
+    max_budget: Option<f64>,
+
+    /// Continue the most recent session
+    #[arg(long = "continue")]
+    continue_session: bool,
+
     /// Command to run (default: claude)
     #[arg(trailing_var_arg = true)]
     command: Vec<String>,
@@ -69,7 +85,16 @@ async fn main() -> Result<()> {
 
     // Run the app — no more PTY setup needed, App handles process spawning
     let theme_name_owned = theme_name.to_string();
-    let mut app = app::App::new(config, theme, theme_name_owned, command);
+    let mut app = app::App::new(
+        config,
+        theme,
+        theme_name_owned,
+        command,
+        cli.continue_session,
+        cli.model,
+        cli.effort,
+        cli.max_budget,
+    );
     let result = app.run(&mut terminal).await;
 
     ratatui::restore();

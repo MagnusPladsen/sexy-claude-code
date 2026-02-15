@@ -9,6 +9,12 @@ pub struct Config {
     pub theme: String,
     pub fps: u32,
     pub layout: LayoutConfig,
+    /// Claude model to use (e.g. "claude-sonnet-4-5-20250929").
+    pub model: Option<String>,
+    /// Effort level ("low", "medium", "high").
+    pub effort: Option<String>,
+    /// Maximum budget in USD per session.
+    pub max_budget_usd: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -24,6 +30,9 @@ impl Default for Config {
             theme: "catppuccin-mocha".to_string(),
             fps: 30,
             layout: LayoutConfig::default(),
+            model: None,
+            effort: None,
+            max_budget_usd: None,
         }
     }
 }
@@ -142,6 +151,27 @@ mod tests {
         assert_eq!(config.theme, "dracula");
         assert_eq!(config.command, "claude");
         assert_eq!(config.fps, 30);
+    }
+
+    #[test]
+    fn test_claude_options_config() {
+        let toml = r#"
+            model = "claude-sonnet-4-5-20250929"
+            effort = "high"
+            max_budget_usd = 5.0
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.model.as_deref(), Some("claude-sonnet-4-5-20250929"));
+        assert_eq!(config.effort.as_deref(), Some("high"));
+        assert_eq!(config.max_budget_usd, Some(5.0));
+    }
+
+    #[test]
+    fn test_claude_options_default_none() {
+        let config = Config::default();
+        assert!(config.model.is_none());
+        assert!(config.effort.is_none());
+        assert!(config.max_budget_usd.is_none());
     }
 
     #[test]

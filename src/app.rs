@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use crate::claude::commands::{self, CustomCommand};
 use crate::claude::conversation::Conversation;
 use crate::claude::events::StreamEvent;
-use crate::claude::process::ClaudeProcess;
+use crate::claude::process::{ClaudeProcess, SpawnOptions};
 use crate::claude::sessions;
 use crate::config::Config;
 use crate::theme::Theme;
@@ -107,10 +107,27 @@ pub struct App {
     /// Cumulative token usage for this session.
     total_input_tokens: u64,
     total_output_tokens: u64,
+    /// Whether to continue the most recent session on startup.
+    continue_session: bool,
+    /// Model override from CLI args.
+    model_override: Option<String>,
+    /// Effort override from CLI args.
+    effort_override: Option<String>,
+    /// Budget override from CLI args.
+    budget_override: Option<f64>,
 }
 
 impl App {
-    pub fn new(config: Config, theme: Theme, theme_name: String, command: String) -> Self {
+    pub fn new(
+        config: Config,
+        theme: Theme,
+        theme_name: String,
+        command: String,
+        continue_session: bool,
+        model_override: Option<String>,
+        effort_override: Option<String>,
+        budget_override: Option<f64>,
+    ) -> Self {
         Self {
             config,
             theme,
@@ -133,6 +150,27 @@ impl App {
             event_tx: None,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            continue_session,
+            model_override,
+            effort_override,
+            budget_override,
+        }
+    }
+
+    /// Build spawn options from config + CLI overrides.
+    fn build_spawn_options(&self) -> SpawnOptions {
+        SpawnOptions {
+            continue_session: self.continue_session,
+            model: self
+                .model_override
+                .clone()
+                .or_else(|| self.config.model.clone()),
+            effort: self
+                .effort_override
+                .clone()
+                .or_else(|| self.config.effort.clone()),
+            max_budget_usd: self.budget_override.or(self.config.max_budget_usd),
+            ..Default::default()
         }
     }
 
@@ -141,7 +179,9 @@ impl App {
         self.event_tx = Some(tx.clone());
 
         // Spawn Claude process
-        let (claude_process, event_rx) = ClaudeProcess::spawn(&self.command)?;
+        let options = self.build_spawn_options();
+        let (claude_process, event_rx) =
+            ClaudeProcess::spawn_with_options(&self.command, options)?;
         self.claude = Some(claude_process);
         Self::forward_claude_events(event_rx, tx.clone());
 
@@ -214,9 +254,12 @@ impl App {
         self.slash_commands.clear();
         self.session_id = None;
 
-        // Spawn new process with --resume
+        // Spawn new process with --resume + config options
+        let mut options = self.build_spawn_options();
+        options.resume_session_id = Some(session_id.to_string());
+        options.continue_session = false;
         let (claude_process, event_rx) =
-            ClaudeProcess::spawn_with_resume(&self.command, session_id)?;
+            ClaudeProcess::spawn_with_options(&self.command, options)?;
         self.claude = Some(claude_process);
 
         // Forward events from the new process
@@ -225,6 +268,31 @@ impl App {
         }
 
         self.toast = Some(Toast::new("Resuming session...".to_string()));
+
+        Ok(())
+    }
+
+    /// Continue the most recent session using --continue.
+    async fn continue_last_session(&mut self) -> Result<()> {
+        if let Some(ref mut claude) = self.claude {
+            let _ = claude.kill().await;
+        }
+        self.claude = None;
+        self.conversation = Conversation::new();
+        self.scroll_offset = 0;
+        self.auto_scroll = true;
+        self.slash_commands.clear();
+        self.session_id = None;
+
+        let (claude_process, event_rx) =
+            ClaudeProcess::spawn_with_continue(&self.command)?;
+        self.claude = Some(claude_process);
+
+        if let Some(ref tx) = self.event_tx {
+            Self::forward_claude_events(event_rx, tx.clone());
+        }
+
+        self.toast = Some(Toast::new("Continuing last session...".to_string()));
 
         Ok(())
     }
@@ -645,6 +713,11 @@ impl App {
     fn open_action_menu(&mut self) {
         let items = vec![
             OverlayItem {
+                label: "Continue Last Session".to_string(),
+                value: "continue".to_string(),
+                hint: String::new(),
+            },
+            OverlayItem {
                 label: "Resume Session".to_string(),
                 value: "resume".to_string(),
                 hint: "Ctrl+R".to_string(),
@@ -728,6 +801,7 @@ impl App {
             AppMode::ActionMenu(state) => {
                 if let Some(value) = state.selected_value() {
                     match value.as_str() {
+                        "continue" => self.continue_last_session().await?,
                         "resume" => self.open_session_picker(),
                         "theme" => self.open_theme_picker(),
                         "quit" => self.should_quit = true,
