@@ -232,3 +232,81 @@ pub fn render_overlay(frame: &mut Frame, title: &str, state: &OverlayState, them
     let widget = OverlayWidget::new(title, state, theme);
     frame.render_widget(widget, frame.area());
 }
+
+/// Render a scrollable text viewer overlay on top of the UI.
+pub fn render_text_viewer(
+    frame: &mut Frame,
+    title: &str,
+    lines: &[String],
+    scroll: usize,
+    theme: &Theme,
+) {
+    let area = frame.area();
+
+    // Calculate popup size (~80% of screen)
+    let width = (area.width * 80 / 100).max(40).min(area.width.saturating_sub(4));
+    let height = (area.height * 80 / 100).max(10).min(area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = Rect::new(x, y, width, height);
+
+    let buf = frame.buffer_mut();
+
+    // Clear area
+    Clear.render(popup, buf);
+
+    // Draw border with title and scroll hint
+    let scroll_hint = format!(" {}/{} | Esc to close ", scroll + 1, lines.len().max(1));
+    let block = Block::default()
+        .title(format!(" {} ", title))
+        .title_style(Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))
+        .title_bottom(scroll_hint)
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(theme.border_focused))
+        .style(Style::default().bg(theme.surface).fg(theme.foreground));
+
+    let inner = block.inner(popup);
+    block.render(popup, buf);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    // Clamp scroll
+    let max_scroll = lines.len().saturating_sub(inner.height as usize);
+    let scroll = scroll.min(max_scroll);
+
+    // Render lines
+    let visible = inner.height as usize;
+    let text_style = Style::default().fg(theme.foreground).bg(theme.surface);
+    let heading_style = Style::default()
+        .fg(theme.primary)
+        .bg(theme.surface)
+        .add_modifier(Modifier::BOLD);
+    let code_style = Style::default().fg(theme.accent).bg(theme.surface);
+
+    for (i, line) in lines.iter().skip(scroll).take(visible).enumerate() {
+        let row_y = inner.y + i as u16;
+
+        // Simple markdown-aware styling
+        let style = if line.starts_with('#') {
+            heading_style
+        } else if line.starts_with("```") || line.starts_with("  ") || line.starts_with('\t') {
+            code_style
+        } else {
+            text_style
+        };
+
+        for (j, ch) in line.chars().enumerate() {
+            let col_x = inner.x + j as u16;
+            if col_x >= inner.right() {
+                break;
+            }
+            if let Some(cell) = buf.cell_mut((col_x, row_y)) {
+                cell.set_char(ch);
+                cell.set_style(style);
+            }
+        }
+    }
+}
