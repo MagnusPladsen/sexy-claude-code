@@ -170,6 +170,7 @@ impl App {
                 .clone()
                 .or_else(|| self.config.effort.clone()),
             max_budget_usd: self.budget_override.or(self.config.max_budget_usd),
+            mcp_config: self.config.mcp_config.clone(),
             ..Default::default()
         }
     }

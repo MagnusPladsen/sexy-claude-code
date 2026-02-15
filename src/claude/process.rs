@@ -18,6 +18,8 @@ pub struct SpawnOptions {
     pub effort: Option<String>,
     /// Max budget in USD.
     pub max_budget_usd: Option<f64>,
+    /// Path to MCP server config file.
+    pub mcp_config: Option<String>,
 }
 
 pub struct ClaudeProcess {
@@ -90,6 +92,9 @@ impl ClaudeProcess {
         }
         if let Some(budget) = options.max_budget_usd {
             cmd.args(["--max-budget-usd", &budget.to_string()]);
+        }
+        if let Some(ref mcp_config) = options.mcp_config {
+            cmd.args(["--mcp-config", mcp_config]);
         }
         // Prevent "cannot run inside another Claude Code session" error
         cmd.env_remove("CLAUDECODE");
