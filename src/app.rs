@@ -1058,6 +1058,7 @@ impl App {
         let model_name = self.detected_model.as_deref()
             .or(self.model_override.as_deref())
             .or(self.config.model.as_deref());
+        let permission_mode = self.config.permission_mode.as_deref();
         let text_viewer = match &self.mode {
             AppMode::TextViewer {
                 title,
@@ -1082,6 +1083,7 @@ impl App {
                 git_info,
                 todo_summary.as_deref(),
                 model_name,
+                permission_mode,
             );
             if let Some((title, state)) = overlay {
                 ui::render_overlay(frame, title, state, theme);
