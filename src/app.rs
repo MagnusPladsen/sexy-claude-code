@@ -82,6 +82,8 @@ pub struct App {
     command: String,
     slash_commands: Vec<String>,
     completion: Option<CompletionState>,
+    /// Tracks the last slash command sent, so we can show feedback for empty results.
+    pending_slash_command: Option<String>,
 }
 
 impl App {
@@ -101,6 +103,7 @@ impl App {
             command,
             slash_commands: Vec::new(),
             completion: None,
+            pending_slash_command: None,
         }
     }
 
@@ -168,6 +171,34 @@ impl App {
                 if let StreamEvent::SystemInit { ref slash_commands } = event {
                     self.slash_commands = slash_commands.clone();
                 }
+
+                // Handle Result events from slash commands that return empty text
+                if let StreamEvent::Result { ref text, is_error } = event {
+                    if let Some(cmd) = self.pending_slash_command.take() {
+                        if text.is_empty() {
+                            // Command produced no output — show feedback
+                            let msg = format!(
+                                "{cmd} is not supported in this mode."
+                            );
+                            self.conversation.push_system_message(msg);
+                        } else if is_error {
+                            // Command returned an error — prefix it
+                            let msg = format!("Error running {cmd}: {text}");
+                            self.conversation.push_system_message(msg);
+                            // Skip apply_event since we're showing our own message
+                            if self.auto_scroll {
+                                self.scroll_to_bottom();
+                            }
+                            return Ok(());
+                        }
+                    }
+                }
+
+                // A streaming response clears the pending command
+                if matches!(event, StreamEvent::MessageStart { .. }) {
+                    self.pending_slash_command = None;
+                }
+
                 self.conversation.apply_event(&event);
                 if self.auto_scroll {
                     self.scroll_to_bottom();
@@ -288,6 +319,7 @@ impl App {
                         }
                     } else if text.starts_with('/') {
                         // Slash command — send to Claude but don't add as user message
+                        self.pending_slash_command = Some(text.clone());
                         self.auto_scroll = true;
                         self.scroll_to_bottom();
                         if let Some(ref mut claude) = self.claude {
