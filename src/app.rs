@@ -128,6 +128,8 @@ pub struct App {
     git_last_refresh: u64,
     /// Tracks Claude's todo list from TodoWrite tool calls.
     todo_tracker: TodoTracker,
+    /// Model name detected from the most recent MessageStart event.
+    detected_model: Option<String>,
 }
 
 impl App {
@@ -170,6 +172,7 @@ impl App {
             git_info: GitInfo::gather(),
             git_last_refresh: 0,
             todo_tracker: TodoTracker::new(),
+            detected_model: None,
         }
     }
 
@@ -348,9 +351,12 @@ impl App {
                     self.pending_slash_command.take();
                 }
 
-                // A streaming response clears the pending command
-                if matches!(event, StreamEvent::MessageStart { .. }) {
+                // Capture model name and clear pending command on new message
+                if let StreamEvent::MessageStart { ref model, .. } = event {
                     self.pending_slash_command = None;
+                    if self.detected_model.is_none() || !model.is_empty() {
+                        self.detected_model = Some(model.clone());
+                    }
                 }
 
                 // Show toast for hook lifecycle events
@@ -1049,6 +1055,9 @@ impl App {
         let token_usage = (self.total_input_tokens, self.total_output_tokens);
         let git_info = &self.git_info;
         let todo_summary = self.todo_tracker.summary();
+        let model_name = self.detected_model.as_deref()
+            .or(self.model_override.as_deref())
+            .or(self.config.model.as_deref());
         let text_viewer = match &self.mode {
             AppMode::TextViewer {
                 title,
@@ -1072,6 +1081,7 @@ impl App {
                 token_usage,
                 git_info,
                 todo_summary.as_deref(),
+                model_name,
             );
             if let Some((title, state)) = overlay {
                 ui::render_overlay(frame, title, state, theme);
