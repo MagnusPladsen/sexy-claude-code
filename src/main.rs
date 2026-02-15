@@ -6,6 +6,7 @@ mod keybindings;
 mod pty;
 mod terminal;
 mod theme;
+mod todo;
 mod ui;
 
 use anyhow::{Context, Result};
