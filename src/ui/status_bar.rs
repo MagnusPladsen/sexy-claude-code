@@ -17,6 +17,7 @@ pub struct StatusBar<'a> {
     git_info: &'a GitInfo,
     todo_summary: Option<&'a str>,
     model_name: Option<&'a str>,
+    permission_mode: Option<&'a str>,
 }
 
 impl<'a> StatusBar<'a> {
@@ -27,6 +28,7 @@ impl<'a> StatusBar<'a> {
         git_info: &'a GitInfo,
         todo_summary: Option<&'a str>,
         model_name: Option<&'a str>,
+        permission_mode: Option<&'a str>,
     ) -> Self {
         Self {
             theme,
@@ -35,6 +37,7 @@ impl<'a> StatusBar<'a> {
             git_info,
             todo_summary,
             model_name,
+            permission_mode,
         }
     }
 }
@@ -93,6 +96,21 @@ impl<'a> Widget for StatusBar<'a> {
             .fg(self.theme.primary)
             .bg(self.theme.status_bg);
         let mut left_end = write_str(buf, left, area.x, area.y, area.right(), left_style);
+
+        // Permission mode indicator (after app name)
+        if let Some(mode) = self.permission_mode {
+            let (label, color) = match mode {
+                "plan" => ("PLAN", self.theme.warning),
+                "bypassPermissions" => ("BYPASS", self.theme.error),
+                _ => ("DEFAULT", self.theme.success),
+            };
+            let sep = " | ";
+            left_end = write_str(buf, sep, left_end, area.y, area.right(), style);
+            let mode_style = Style::default()
+                .fg(color)
+                .bg(self.theme.status_bg);
+            left_end = write_str(buf, label, left_end, area.y, area.right(), mode_style);
+        }
 
         // Git branch info (right after app name)
         if let Some(display) = self.git_info.display() {
