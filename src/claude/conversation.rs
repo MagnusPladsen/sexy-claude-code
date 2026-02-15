@@ -27,6 +27,14 @@ pub enum ContentBlock {
         /// Whether this result is collapsed in the UI (auto-collapsed if >20 lines).
         collapsed: bool,
     },
+    /// Image content block (rendered as placeholder in terminal).
+    Image {
+        media_type: String,
+    },
+    /// Document content block (rendered as placeholder in terminal).
+    Document {
+        doc_type: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +129,18 @@ impl Conversation {
                         ContentBlockType::Thinking => {
                             msg.content.push(ContentBlock::Thinking(String::new()));
                             self.block_types.push(ContentBlockType::Thinking);
+                        }
+                        ContentBlockType::Image { ref media_type } => {
+                            msg.content.push(ContentBlock::Image {
+                                media_type: media_type.clone(),
+                            });
+                            self.block_types.push(block_type.clone());
+                        }
+                        ContentBlockType::Document { ref doc_type } => {
+                            msg.content.push(ContentBlock::Document {
+                                doc_type: doc_type.clone(),
+                            });
+                            self.block_types.push(block_type.clone());
                         }
                     }
                 }
@@ -651,5 +671,53 @@ mod tests {
 
         // Text-only message → not awaiting tool result
         assert!(!conv.is_awaiting_tool_result());
+    }
+
+    #[test]
+    fn test_image_block_added_to_message() {
+        let mut conv = Conversation::new();
+        conv.apply_event(&StreamEvent::MessageStart {
+            message_id: "msg_001".to_string(),
+            model: "claude-opus-4-6".to_string(),
+            usage: None,
+        });
+        conv.apply_event(&StreamEvent::ContentBlockStart {
+            index: 0,
+            block_type: ContentBlockType::Image {
+                media_type: "image/png".to_string(),
+            },
+        });
+        conv.apply_event(&StreamEvent::ContentBlockStop { index: 0 });
+
+        let msg = &conv.messages[0];
+        assert_eq!(msg.content.len(), 1);
+        match &msg.content[0] {
+            ContentBlock::Image { media_type } => assert_eq!(media_type, "image/png"),
+            other => panic!("Expected Image, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_document_block_added_to_message() {
+        let mut conv = Conversation::new();
+        conv.apply_event(&StreamEvent::MessageStart {
+            message_id: "msg_001".to_string(),
+            model: "claude-opus-4-6".to_string(),
+            usage: None,
+        });
+        conv.apply_event(&StreamEvent::ContentBlockStart {
+            index: 0,
+            block_type: ContentBlockType::Document {
+                doc_type: "application/pdf".to_string(),
+            },
+        });
+        conv.apply_event(&StreamEvent::ContentBlockStop { index: 0 });
+
+        let msg = &conv.messages[0];
+        assert_eq!(msg.content.len(), 1);
+        match &msg.content[0] {
+            ContentBlock::Document { doc_type } => assert_eq!(doc_type, "application/pdf"),
+            other => panic!("Expected Document, got {:?}", other),
+        }
     }
 }

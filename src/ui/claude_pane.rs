@@ -290,6 +290,12 @@ fn render_message(msg: &Message, lines: &mut Vec<StyledLine>, content_width: usi
             ContentBlock::Thinking(text) => {
                 render_thinking(text, lines, theme);
             }
+            ContentBlock::Image { media_type } => {
+                render_media_placeholder("Image", media_type, lines, theme);
+            }
+            ContentBlock::Document { doc_type } => {
+                render_media_placeholder("Document", doc_type, lines, theme);
+            }
         }
     }
 }
@@ -562,6 +568,24 @@ fn render_thinking(text: &str, lines: &mut Vec<StyledLine>, theme: &Theme) {
             dim_style,
         ));
     }
+}
+
+/// Render a placeholder for image/document content blocks that can't be displayed in terminal.
+fn render_media_placeholder(
+    kind: &str,
+    media_type: &str,
+    lines: &mut Vec<StyledLine>,
+    theme: &Theme,
+) {
+    let style = Style::default()
+        .fg(theme.info)
+        .add_modifier(Modifier::DIM | Modifier::ITALIC);
+    lines.push(StyledLine {
+        spans: vec![StyledSpan {
+            text: format!("  [{kind}: {media_type}]"),
+            style,
+        }],
+    });
 }
 
 /// Extract the most relevant argument from a tool's JSON input.
@@ -1162,5 +1186,51 @@ mod tests {
         assert!(all_text.contains("Write"), "Expected Write tool header");
         assert!(all_text.contains("line one"), "Expected content preview");
         assert!(all_text.contains("line three"), "Expected all content lines");
+    }
+
+    #[test]
+    fn test_image_placeholder_renders() {
+        let mut conv = Conversation::new();
+        let theme = crate::theme::Theme::default_theme();
+        conv.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Image {
+                media_type: "image/png".to_string(),
+            }],
+        });
+        let lines = render_conversation(&conv, 80, &theme);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(
+            all_text.contains("[Image: image/png]"),
+            "Expected image placeholder, got: {}",
+            all_text
+        );
+    }
+
+    #[test]
+    fn test_document_placeholder_renders() {
+        let mut conv = Conversation::new();
+        let theme = crate::theme::Theme::default_theme();
+        conv.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Document {
+                doc_type: "application/pdf".to_string(),
+            }],
+        });
+        let lines = render_conversation(&conv, 80, &theme);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(
+            all_text.contains("[Document: application/pdf]"),
+            "Expected document placeholder, got: {}",
+            all_text
+        );
     }
 }

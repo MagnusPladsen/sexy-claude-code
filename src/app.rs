@@ -325,6 +325,19 @@ impl App {
                     self.pending_slash_command = None;
                 }
 
+                // Show toast for hook lifecycle events
+                if let StreamEvent::SystemHook { ref subtype, .. } = event {
+                    match subtype.as_str() {
+                        "hook_started" => {
+                            self.toast = Some(Toast::new("Hook running...".to_string()));
+                        }
+                        "hook_completed" => {
+                            self.toast = Some(Toast::new("Hook completed".to_string()));
+                        }
+                        _ => {}
+                    }
+                }
+
                 // Accumulate token usage
                 match &event {
                     StreamEvent::MessageStart {

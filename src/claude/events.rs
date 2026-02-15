@@ -53,6 +53,10 @@ pub enum ContentBlockType {
     Text,
     ToolUse { id: String, name: String },
     Thinking,
+    /// Image content block (e.g. screenshots from tools).
+    Image { media_type: String },
+    /// Document content block (e.g. PDFs).
+    Document { doc_type: String },
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +127,13 @@ struct RawContentBlock {
     block_type: String,
     id: Option<String>,
     name: Option<String>,
+    /// Source object for image/document blocks (contains `media_type`).
+    source: Option<RawSource>,
+}
+
+#[derive(Deserialize)]
+struct RawSource {
+    media_type: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -299,6 +310,20 @@ fn parse_raw_event(raw: RawEvent, line: &str) -> StreamEvent {
                         name: block.name.unwrap_or_default(),
                     },
                     "thinking" => ContentBlockType::Thinking,
+                    "image" => ContentBlockType::Image {
+                        media_type: block
+                            .source
+                            .as_ref()
+                            .and_then(|s| s.media_type.clone())
+                            .unwrap_or_else(|| "image/unknown".to_string()),
+                    },
+                    "document" => ContentBlockType::Document {
+                        doc_type: block
+                            .source
+                            .as_ref()
+                            .and_then(|s| s.media_type.clone())
+                            .unwrap_or_else(|| "document".to_string()),
+                    },
                     _ => return StreamEvent::Unknown(line.to_string()),
                 };
                 StreamEvent::ContentBlockStart { index, block_type }
@@ -643,6 +668,44 @@ mod tests {
                 assert_eq!(u.output_tokens, 42);
             }
             other => panic!("Expected MessageDelta, got {:?}", other),
+        }
+    }
+
+    // --- Image/document blocks ---
+
+    #[test]
+    fn test_parse_image_content_block_start() {
+        let line = r#"{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"image","source":{"type":"base64","media_type":"image/png","data":""}}},"session_id":"abc"}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::ContentBlockStart { index, block_type } => {
+                assert_eq!(index, 1);
+                match block_type {
+                    ContentBlockType::Image { media_type } => {
+                        assert_eq!(media_type, "image/png");
+                    }
+                    other => panic!("Expected Image, got {:?}", other),
+                }
+            }
+            other => panic!("Expected ContentBlockStart, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_document_content_block_start() {
+        let line = r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":""}}},"session_id":"abc"}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::ContentBlockStart { index, block_type } => {
+                assert_eq!(index, 0);
+                match block_type {
+                    ContentBlockType::Document { doc_type } => {
+                        assert_eq!(doc_type, "application/pdf");
+                    }
+                    other => panic!("Expected Document, got {:?}", other),
+                }
+            }
+            other => panic!("Expected ContentBlockStart, got {:?}", other),
         }
     }
 
