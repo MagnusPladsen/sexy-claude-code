@@ -35,6 +35,11 @@ enum LocalAction {
     Clear,
 }
 
+/// What to do when a TextInput overlay is confirmed.
+enum TextInputAction {
+    RenameSession,
+}
+
 enum AppMode {
     Normal,
     ActionMenu(OverlayState),
@@ -49,6 +54,12 @@ enum AppMode {
         query: String,
         matches: Vec<String>,
         selected: usize,
+    },
+    TextInput {
+        prompt: String,
+        value: String,
+        cursor: usize,
+        action: TextInputAction,
     },
 }
 
@@ -458,6 +469,7 @@ impl App {
             | AppMode::SessionPicker(_) => self.handle_key_overlay(key).await,
             AppMode::TextViewer { .. } => self.handle_key_text_viewer(key),
             AppMode::HistorySearch { .. } => self.handle_key_history_search(key),
+            AppMode::TextInput { .. } => self.handle_key_text_input(key).await,
         }
     }
 
@@ -697,7 +709,7 @@ impl App {
             AppMode::ActionMenu(ref mut state)
             | AppMode::ThemePicker(ref mut state)
             | AppMode::SessionPicker(ref mut state) => f(state),
-            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } => {}
+            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } => {}
         }
     }
 
@@ -857,6 +869,11 @@ impl App {
                 hint: "Ctrl+R".to_string(),
             },
             OverlayItem {
+                label: "Rename Session".to_string(),
+                value: "rename".to_string(),
+                hint: String::new(),
+            },
+            OverlayItem {
                 label: "Compact Context".to_string(),
                 value: "compact".to_string(),
                 hint: String::new(),
@@ -975,6 +992,74 @@ impl App {
         Ok(())
     }
 
+    async fn handle_key_text_input(&mut self, key: event::KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Enter => {
+                let mode = std::mem::replace(&mut self.mode, AppMode::Normal);
+                if let AppMode::TextInput { value, action, .. } = mode {
+                    if !value.trim().is_empty() {
+                        self.execute_text_input_action(action, &value).await?;
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let AppMode::TextInput { ref mut value, ref mut cursor, .. } = self.mode {
+                    if *cursor > 0 {
+                        value.remove(*cursor - 1);
+                        *cursor -= 1;
+                    }
+                }
+            }
+            KeyCode::Left => {
+                if let AppMode::TextInput { ref mut cursor, .. } = self.mode {
+                    *cursor = cursor.saturating_sub(1);
+                }
+            }
+            KeyCode::Right => {
+                if let AppMode::TextInput { ref value, ref mut cursor, .. } = self.mode {
+                    if *cursor < value.len() {
+                        *cursor += 1;
+                    }
+                }
+            }
+            KeyCode::Home => {
+                if let AppMode::TextInput { ref mut cursor, .. } = self.mode {
+                    *cursor = 0;
+                }
+            }
+            KeyCode::End => {
+                if let AppMode::TextInput { ref value, ref mut cursor, .. } = self.mode {
+                    *cursor = value.len();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let AppMode::TextInput { ref mut value, ref mut cursor, .. } = self.mode {
+                    value.insert(*cursor, c);
+                    *cursor += 1;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn execute_text_input_action(&mut self, action: TextInputAction, value: &str) -> Result<()> {
+        match action {
+            TextInputAction::RenameSession => {
+                let cmd = format!("/rename {}", value);
+                self.pending_slash_command = Some(cmd.clone());
+                if let Some(ref mut claude) = self.claude {
+                    claude.send_message(&cmd).await?;
+                }
+                self.toast = Some(Toast::new(format!("Renamed session to \"{}\"", value)));
+            }
+        }
+        Ok(())
+    }
+
     fn preview_theme(&mut self) {
         if let AppMode::ThemePicker(ref state) = self.mode {
             if let Some(value) = state.selected_value() {
@@ -1015,6 +1100,14 @@ impl App {
                     match value.as_str() {
                         "continue" => self.continue_last_session().await?,
                         "resume" => self.open_session_picker(),
+                        "rename" => {
+                            self.mode = AppMode::TextInput {
+                                prompt: "Session name".to_string(),
+                                value: String::new(),
+                                cursor: 0,
+                                action: TextInputAction::RenameSession,
+                            };
+                        }
                         "compact" => {
                             self.pending_slash_command = Some("/compact".to_string());
                             if let Some(ref mut claude) = self.claude {
@@ -1033,7 +1126,7 @@ impl App {
                     self.resume_session(&session_id).await?;
                 }
             }
-            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } => {}
+            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } => {}
         }
         Ok(())
     }
@@ -1223,7 +1316,7 @@ impl App {
             AppMode::ActionMenu(state) => Some(("Actions", state)),
             AppMode::ThemePicker(state) => Some(("Select Theme", state)),
             AppMode::SessionPicker(state) => Some(("Resume Session", state)),
-            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } => None,
+            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } => None,
         };
 
         // Clamp scroll before rendering
@@ -1265,6 +1358,12 @@ impl App {
             }
             _ => None,
         };
+        let text_input = match &self.mode {
+            AppMode::TextInput { prompt, value, cursor, .. } => {
+                Some((prompt.as_str(), value.as_str(), *cursor))
+            }
+            _ => None,
+        };
 
         terminal.draw(|frame| {
             ui::render(
@@ -1291,6 +1390,9 @@ impl App {
             }
             if let Some((query, matches, selected)) = history_search {
                 ui::render_history_search(frame, query, matches, selected, theme);
+            }
+            if let Some((prompt, value, cursor)) = text_input {
+                ui::render_text_input(frame, prompt, value, cursor, theme);
             }
         })?;
 
