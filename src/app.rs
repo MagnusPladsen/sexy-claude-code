@@ -55,6 +55,7 @@ enum AppMode {
         matches: Vec<String>,
         selected: usize,
     },
+    CheckpointTimeline(OverlayState),
     TextInput {
         prompt: String,
         value: String,
@@ -469,7 +470,8 @@ impl App {
             AppMode::Normal => self.handle_key_normal(key).await,
             AppMode::ActionMenu(_)
             | AppMode::ThemePicker(_)
-            | AppMode::SessionPicker(_) => self.handle_key_overlay(key).await,
+            | AppMode::SessionPicker(_)
+            | AppMode::CheckpointTimeline(_) => self.handle_key_overlay(key).await,
             AppMode::TextViewer { .. } => self.handle_key_text_viewer(key),
             AppMode::HistorySearch { .. } => self.handle_key_history_search(key),
             AppMode::TextInput { .. } => self.handle_key_text_input(key).await,
@@ -718,7 +720,8 @@ impl App {
         match self.mode {
             AppMode::ActionMenu(ref mut state)
             | AppMode::ThemePicker(ref mut state)
-            | AppMode::SessionPicker(ref mut state) => f(state),
+            | AppMode::SessionPicker(ref mut state)
+            | AppMode::CheckpointTimeline(ref mut state) => f(state),
             AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } => {}
         }
     }
@@ -886,6 +889,11 @@ impl App {
             OverlayItem {
                 label: "Compact Context".to_string(),
                 value: "compact".to_string(),
+                hint: String::new(),
+            },
+            OverlayItem {
+                label: "Rewind to Checkpoint".to_string(),
+                value: "rewind".to_string(),
                 hint: String::new(),
             },
             OverlayItem {
@@ -1125,6 +1133,7 @@ impl App {
                             }
                             self.toast = Some(Toast::new("Compacting context...".to_string()));
                         }
+                        "rewind" => self.open_checkpoint_timeline(),
                         "theme" => self.open_theme_picker(),
                         "quit" => self.should_quit = true,
                         _ => {}
@@ -1134,6 +1143,17 @@ impl App {
             AppMode::SessionPicker(state) => {
                 if let Some(session_id) = state.selected_value() {
                     self.resume_session(&session_id).await?;
+                }
+            }
+            AppMode::CheckpointTimeline(state) => {
+                if let Some(value) = state.selected_value() {
+                    // value is the turn number (1-based)
+                    let cmd = format!("/rewind {}", value);
+                    self.pending_slash_command = Some(cmd.clone());
+                    if let Some(ref mut claude) = self.claude {
+                        claude.send_message(&cmd).await?;
+                    }
+                    self.toast = Some(Toast::new(format!("Rewinding to turn {}...", value)));
                 }
             }
             AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } => {}
@@ -1284,6 +1304,50 @@ impl App {
         };
     }
 
+    fn open_checkpoint_timeline(&mut self) {
+        use crate::claude::conversation::{ContentBlock, Role};
+
+        // Build checkpoint list from user messages
+        let mut turn_number = 0u32;
+        let mut items: Vec<OverlayItem> = Vec::new();
+
+        for msg in &self.conversation.messages {
+            if msg.role != Role::User {
+                continue;
+            }
+            turn_number += 1;
+
+            // Extract first line of user text as preview
+            let preview = msg.content.iter().find_map(|block| {
+                if let ContentBlock::Text(text) = block {
+                    let first_line = text.trim().lines().next().unwrap_or("").to_string();
+                    if first_line.len() > 60 {
+                        Some(format!("{}...", &first_line[..57]))
+                    } else {
+                        Some(first_line)
+                    }
+                } else {
+                    None
+                }
+            }).unwrap_or_else(|| "(empty)".to_string());
+
+            items.push(OverlayItem {
+                label: format!("Turn {} — {}", turn_number, preview),
+                value: turn_number.to_string(),
+                hint: String::new(),
+            });
+        }
+
+        if items.is_empty() {
+            self.toast = Some(Toast::new("No checkpoints available".to_string()));
+            return;
+        }
+
+        // Most recent first
+        items.reverse();
+        self.mode = AppMode::CheckpointTimeline(OverlayState::new(items, None));
+    }
+
     fn handle_key_text_viewer(&mut self, key: event::KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
@@ -1326,6 +1390,7 @@ impl App {
             AppMode::ActionMenu(state) => Some(("Actions", state)),
             AppMode::ThemePicker(state) => Some(("Select Theme", state)),
             AppMode::SessionPicker(state) => Some(("Resume Session", state)),
+            AppMode::CheckpointTimeline(state) => Some(("Rewind to Checkpoint", state)),
             AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } => None,
         };
 
