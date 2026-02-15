@@ -17,6 +17,10 @@ pub struct Config {
     pub max_budget_usd: Option<f64>,
     /// Path to MCP server config file (e.g. "~/.claude/mcp.json").
     pub mcp_config: Option<String>,
+    /// Permission mode: "default", "plan", "bypassPermissions".
+    pub permission_mode: Option<String>,
+    /// Tools to auto-allow (e.g. ["Bash", "Read", "Write"]).
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,6 +40,8 @@ impl Default for Config {
             effort: None,
             max_budget_usd: None,
             mcp_config: None,
+            permission_mode: None,
+            allowed_tools: None,
         }
     }
 }
@@ -183,6 +189,20 @@ mod tests {
         let toml = r#"mcp_config = "~/.claude/mcp.json""#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.mcp_config.as_deref(), Some("~/.claude/mcp.json"));
+    }
+
+    #[test]
+    fn test_permission_config() {
+        let toml = r#"
+            permission_mode = "plan"
+            allowed_tools = ["Bash", "Read", "Write"]
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.permission_mode.as_deref(), Some("plan"));
+        assert_eq!(
+            config.allowed_tools.as_deref(),
+            Some(&["Bash".to_string(), "Read".to_string(), "Write".to_string()][..])
+        );
     }
 
     #[test]

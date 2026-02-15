@@ -171,6 +171,8 @@ impl App {
                 .or_else(|| self.config.effort.clone()),
             max_budget_usd: self.budget_override.or(self.config.max_budget_usd),
             mcp_config: self.config.mcp_config.clone(),
+            permission_mode: self.config.permission_mode.clone(),
+            allowed_tools: self.config.allowed_tools.clone(),
             ..Default::default()
         }
     }
@@ -312,8 +314,17 @@ impl App {
                 }
 
                 // Show toast for empty slash command results, clear tracking
-                if let StreamEvent::Result { ref text, is_error } = event {
-                    if text.is_empty() && !is_error {
+                if let StreamEvent::Result { ref text, is_error, ref permission_denials } = event {
+                    if !permission_denials.is_empty() {
+                        let denied: Vec<&str> = permission_denials
+                            .iter()
+                            .map(|d| d.tool_name.as_str())
+                            .collect();
+                        self.toast = Some(Toast::new(format!(
+                            "Permission denied: {}",
+                            denied.join(", ")
+                        )));
+                    } else if text.is_empty() && !is_error {
                         if let Some(cmd) = self.pending_slash_command.as_ref() {
                             self.toast = Some(Toast::new(format!("Ran {cmd}")));
                         }

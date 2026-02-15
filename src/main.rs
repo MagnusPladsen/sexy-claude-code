@@ -39,6 +39,14 @@ struct Cli {
     #[arg(long)]
     mcp_config: Option<String>,
 
+    /// Permission mode: default, plan, bypassPermissions (overrides config)
+    #[arg(long)]
+    permission_mode: Option<String>,
+
+    /// Tools to auto-allow (can be repeated, e.g. --allowed-tools Bash --allowed-tools Read)
+    #[arg(long = "allowed-tools")]
+    allowed_tools: Option<Vec<String>>,
+
     /// Continue the most recent session
     #[arg(long = "continue")]
     continue_session: bool,
@@ -58,6 +66,12 @@ async fn main() -> Result<()> {
     // Apply CLI overrides to config
     if cli.mcp_config.is_some() {
         config.mcp_config = cli.mcp_config;
+    }
+    if cli.permission_mode.is_some() {
+        config.permission_mode = cli.permission_mode;
+    }
+    if cli.allowed_tools.is_some() {
+        config.allowed_tools = cli.allowed_tools;
     }
 
     let theme_name = cli.theme.as_deref().unwrap_or(&config.theme);

@@ -478,6 +478,7 @@ mod tests {
         conv.apply_event(&StreamEvent::Result {
             text: "Hi there!".to_string(),
             is_error: false,
+            permission_denials: Vec::new(),
         });
 
         // Should have exactly 2 messages: user + assistant (NOT 3)
@@ -574,6 +575,7 @@ mod tests {
         conv.apply_event(&StreamEvent::Result {
             text: "Available commands: /help, /clear".to_string(),
             is_error: false,
+            permission_denials: Vec::new(),
         });
 
         // Should create one assistant message
