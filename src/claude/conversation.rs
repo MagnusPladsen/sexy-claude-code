@@ -34,6 +34,9 @@ pub struct Message {
 pub struct Conversation {
     pub messages: Vec<Message>,
     streaming: bool,
+    /// Set to true when a full streaming response completes (MessageStop).
+    /// Used to suppress duplicate messages from the Result event that follows.
+    had_streaming_response: bool,
     /// Buffer that accumulates partial JSON chunks for tool_use input.
     tool_input_buf: String,
     /// Tracks the ContentBlockType for each block index in the current message,
@@ -47,6 +50,7 @@ impl Conversation {
         Self {
             messages: Vec::new(),
             streaming: false,
+            had_streaming_response: false,
             tool_input_buf: String::new(),
             block_types: Vec::new(),
         }
@@ -60,6 +64,14 @@ impl Conversation {
         });
     }
 
+    /// Add a system/info message displayed as an assistant message.
+    pub fn push_system_message(&mut self, text: String) {
+        self.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text(text)],
+        });
+    }
+
     /// Process a single stream event, updating the conversation state.
     pub fn apply_event(&mut self, event: &StreamEvent) {
         match event {
@@ -69,6 +81,7 @@ impl Conversation {
                     content: Vec::new(),
                 });
                 self.streaming = true;
+                self.had_streaming_response = false;
                 self.block_types.clear();
                 self.tool_input_buf.clear();
             }
@@ -131,17 +144,21 @@ impl Conversation {
 
             StreamEvent::MessageStop => {
                 self.streaming = false;
+                self.had_streaming_response = true;
             }
 
             StreamEvent::Result { ref text, .. } => {
-                // Slash command results appear as assistant messages.
-                if !text.is_empty() {
+                // For normal responses, streaming events already built the message,
+                // so the Result is a duplicate — skip it.
+                // For slash commands (no streaming), Result is the only source.
+                if !text.is_empty() && !self.had_streaming_response {
                     self.messages.push(Message {
                         role: Role::Assistant,
                         content: vec![ContentBlock::Text(text.clone())],
                     });
                 }
                 self.streaming = false;
+                self.had_streaming_response = false;
             }
 
             StreamEvent::SystemInit { .. } | StreamEvent::Unknown(_) => {
@@ -343,6 +360,60 @@ mod tests {
         // Verify content
         match &conv.messages[1].content[0] {
             ContentBlock::Text(t) => assert_eq!(t, "2+2 = 4"),
+            other => panic!("Expected Text, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_result_after_streaming_does_not_duplicate() {
+        let mut conv = Conversation::new();
+
+        // User sends a message
+        conv.push_user_message("Hello".to_string());
+
+        // Full streaming response
+        conv.apply_event(&StreamEvent::MessageStart {
+            message_id: "msg_001".to_string(),
+            model: "claude-opus-4-6".to_string(),
+        });
+        conv.apply_event(&StreamEvent::ContentBlockStart {
+            index: 0,
+            block_type: ContentBlockType::Text,
+        });
+        conv.apply_event(&StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: Delta::TextDelta("Hi there!".to_string()),
+        });
+        conv.apply_event(&StreamEvent::ContentBlockStop { index: 0 });
+        conv.apply_event(&StreamEvent::MessageStop);
+
+        // Result event with the same text (Claude CLI always sends this)
+        conv.apply_event(&StreamEvent::Result {
+            text: "Hi there!".to_string(),
+            is_error: false,
+        });
+
+        // Should have exactly 2 messages: user + assistant (NOT 3)
+        assert_eq!(conv.messages.len(), 2);
+        assert_eq!(conv.messages[0].role, Role::User);
+        assert_eq!(conv.messages[1].role, Role::Assistant);
+    }
+
+    #[test]
+    fn test_slash_command_result_creates_message() {
+        let mut conv = Conversation::new();
+
+        // Slash command result (no preceding streaming events)
+        conv.apply_event(&StreamEvent::Result {
+            text: "Available commands: /help, /clear".to_string(),
+            is_error: false,
+        });
+
+        // Should create one assistant message
+        assert_eq!(conv.messages.len(), 1);
+        assert_eq!(conv.messages[0].role, Role::Assistant);
+        match &conv.messages[0].content[0] {
+            ContentBlock::Text(t) => assert_eq!(t, "Available commands: /help, /clear"),
             other => panic!("Expected Text, got {:?}", other),
         }
     }
