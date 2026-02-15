@@ -258,6 +258,10 @@ fn render_message(msg: &Message, lines: &mut Vec<StyledLine>, content_width: usi
             ContentBlock::ToolResult { .. } => {
                 // Rendered inline after the matching ToolUse above
             }
+            ContentBlock::Thinking(_text) => {
+                // Thinking blocks will be rendered in #18.
+                // For now, skip — they're parsed but not yet displayed.
+            }
         }
     }
 }

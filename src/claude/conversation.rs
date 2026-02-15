@@ -14,6 +14,7 @@ pub enum Role {
 #[allow(dead_code)]
 pub enum ContentBlock {
     Text(String),
+    Thinking(String),
     ToolUse {
         id: String,
         name: String,
@@ -112,6 +113,10 @@ impl Conversation {
                             });
                             self.tool_input_buf.clear();
                         }
+                        ContentBlockType::Thinking => {
+                            msg.content.push(ContentBlock::Thinking(String::new()));
+                            self.block_types.push(ContentBlockType::Thinking);
+                        }
                     }
                 }
             }
@@ -134,6 +139,13 @@ impl Conversation {
                                 msg.content.get_mut(idx)
                             {
                                 *input = self.tool_input_buf.clone();
+                            }
+                        }
+                        Delta::ThinkingDelta(text) => {
+                            if let Some(ContentBlock::Thinking(ref mut s)) =
+                                msg.content.get_mut(idx)
+                            {
+                                s.push_str(text);
                             }
                         }
                     }
@@ -186,7 +198,9 @@ impl Conversation {
                 }
             }
 
-            StreamEvent::SystemInit { .. } | StreamEvent::Unknown(_) => {
+            StreamEvent::SystemInit { .. }
+            | StreamEvent::SystemHook { .. }
+            | StreamEvent::Unknown(_) => {
                 // Handled by App, not conversation state.
             }
         }
@@ -245,6 +259,7 @@ mod tests {
         conv.apply_event(&StreamEvent::MessageStart {
             message_id: "msg_001".to_string(),
             model: "claude-opus-4-6".to_string(),
+            usage: None,
         });
 
         assert_eq!(conv.messages.len(), 1);
@@ -261,6 +276,7 @@ mod tests {
         conv.apply_event(&StreamEvent::MessageStart {
             message_id: "msg_001".to_string(),
             model: "claude-opus-4-6".to_string(),
+            usage: None,
         });
 
         // Start a text content block
@@ -298,6 +314,7 @@ mod tests {
         conv.apply_event(&StreamEvent::MessageStart {
             message_id: "msg_001".to_string(),
             model: "claude-opus-4-6".to_string(),
+            usage: None,
         });
         assert!(conv.is_streaming());
 
@@ -313,6 +330,7 @@ mod tests {
         conv.apply_event(&StreamEvent::MessageStart {
             message_id: "msg_001".to_string(),
             model: "claude-opus-4-6".to_string(),
+            usage: None,
         });
 
         // Start a tool_use content block
@@ -361,6 +379,7 @@ mod tests {
         conv.apply_event(&StreamEvent::MessageStart {
             message_id: "msg_001".to_string(),
             model: "claude-opus-4-6".to_string(),
+            usage: None,
         });
         conv.apply_event(&StreamEvent::ContentBlockStart {
             index: 0,
@@ -373,6 +392,7 @@ mod tests {
         conv.apply_event(&StreamEvent::ContentBlockStop { index: 0 });
         conv.apply_event(&StreamEvent::MessageDelta {
             stop_reason: Some("end_turn".to_string()),
+            usage: None,
         });
         conv.apply_event(&StreamEvent::MessageStop);
 
@@ -400,6 +420,7 @@ mod tests {
         conv.apply_event(&StreamEvent::MessageStart {
             message_id: "msg_001".to_string(),
             model: "claude-opus-4-6".to_string(),
+            usage: None,
         });
         conv.apply_event(&StreamEvent::ContentBlockStart {
             index: 0,
@@ -432,6 +453,7 @@ mod tests {
         conv.apply_event(&StreamEvent::MessageStart {
             message_id: "msg_001".to_string(),
             model: "claude-opus-4-6".to_string(),
+            usage: None,
         });
         conv.apply_event(&StreamEvent::ContentBlockStart {
             index: 0,
@@ -478,6 +500,7 @@ mod tests {
         conv.apply_event(&StreamEvent::MessageStart {
             message_id: "msg_001".to_string(),
             model: "claude-opus-4-6".to_string(),
+            usage: None,
         });
         conv.apply_event(&StreamEvent::ContentBlockStart {
             index: 0,
@@ -518,6 +541,36 @@ mod tests {
         match &conv.messages[0].content[0] {
             ContentBlock::Text(t) => assert_eq!(t, "Available commands: /help, /clear"),
             other => panic!("Expected Text, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_thinking_block_accumulated() {
+        let mut conv = Conversation::new();
+        conv.apply_event(&StreamEvent::MessageStart {
+            message_id: "msg_001".to_string(),
+            model: "claude-opus-4-6".to_string(),
+            usage: None,
+        });
+        conv.apply_event(&StreamEvent::ContentBlockStart {
+            index: 0,
+            block_type: ContentBlockType::Thinking,
+        });
+        conv.apply_event(&StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: Delta::ThinkingDelta("Let me ".to_string()),
+        });
+        conv.apply_event(&StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: Delta::ThinkingDelta("think about this.".to_string()),
+        });
+        conv.apply_event(&StreamEvent::ContentBlockStop { index: 0 });
+
+        let msg = &conv.messages[0];
+        assert_eq!(msg.content.len(), 1);
+        match &msg.content[0] {
+            ContentBlock::Thinking(t) => assert_eq!(t, "Let me think about this."),
+            other => panic!("Expected Thinking, got {:?}", other),
         }
     }
 }

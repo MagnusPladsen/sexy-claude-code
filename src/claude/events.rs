@@ -7,16 +7,28 @@ use serde::Deserialize;
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum StreamEvent {
-    MessageStart { message_id: String, model: String },
+    MessageStart {
+        message_id: String,
+        model: String,
+        usage: Option<Usage>,
+    },
     ContentBlockStart { index: usize, block_type: ContentBlockType },
     ContentBlockDelta { index: usize, delta: Delta },
     ContentBlockStop { index: usize },
-    MessageDelta { stop_reason: Option<String> },
+    MessageDelta {
+        stop_reason: Option<String>,
+        usage: Option<Usage>,
+    },
     MessageStop,
     /// System init event carrying slash commands and session metadata.
     SystemInit {
         slash_commands: Vec<String>,
         session_id: Option<String>,
+    },
+    /// System hook lifecycle event (hook_started, hook_completed).
+    SystemHook {
+        subtype: String,
+        hook_id: Option<String>,
     },
     /// Result event emitted when a command completes (e.g. slash commands).
     Result { text: String, is_error: bool },
@@ -29,16 +41,25 @@ pub enum StreamEvent {
     Unknown(String),
 }
 
+/// Token usage data from message events.
+#[derive(Debug, Clone, Default)]
+pub struct Usage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
 #[derive(Debug, Clone)]
 pub enum ContentBlockType {
     Text,
     ToolUse { id: String, name: String },
+    Thinking,
 }
 
 #[derive(Debug, Clone)]
 pub enum Delta {
     TextDelta(String),
     InputJsonDelta(String),
+    ThinkingDelta(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -59,6 +80,8 @@ struct Envelope {
     slash_commands: Option<Vec<String>>,
     /// Session ID from system.init
     session_id: Option<String>,
+    /// Hook ID for system hook events
+    hook_id: Option<String>,
     /// Generic message field — used by both "assistant" and "user" envelopes.
     /// Typed as Value because the two formats have different shapes.
     message: Option<serde_json::Value>,
@@ -78,16 +101,21 @@ struct RawEvent {
     index: Option<usize>,
     content_block: Option<RawContentBlock>,
     delta: Option<RawDelta>,
-    #[allow(dead_code)]
-    usage: Option<serde_json::Value>,
+    usage: Option<RawUsage>,
 }
 
 #[derive(Deserialize)]
 struct RawMessage {
     id: String,
     model: String,
+    usage: Option<RawUsage>,
 }
 
+#[derive(Deserialize)]
+struct RawUsage {
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+}
 
 #[derive(Deserialize)]
 struct RawContentBlock {
@@ -104,6 +132,8 @@ struct RawDelta {
     text: Option<String>,
     partial_json: Option<String>,
     stop_reason: Option<String>,
+    /// Thinking delta text
+    thinking: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -139,8 +169,14 @@ pub fn parse_event(line: &str) -> StreamEvent {
                 session_id: envelope.session_id,
             }
         }
-        // Other system events (hooks) — ignore
-        "system" => StreamEvent::Unknown(line.to_string()),
+        // System hook lifecycle events (hook_started, hook_completed)
+        "system" => {
+            let subtype = envelope.subtype.unwrap_or_default();
+            StreamEvent::SystemHook {
+                subtype,
+                hook_id: envelope.hook_id,
+            }
+        }
         // Result event carries slash command output
         "result" => {
             let text = envelope.result.unwrap_or_default();
@@ -239,9 +275,14 @@ fn parse_raw_event(raw: RawEvent, line: &str) -> StreamEvent {
     match raw.event_type.as_str() {
         "message_start" => {
             if let Some(msg) = raw.message {
+                let usage = msg.usage.map(|u| Usage {
+                    input_tokens: u.input_tokens.unwrap_or(0),
+                    output_tokens: u.output_tokens.unwrap_or(0),
+                });
                 StreamEvent::MessageStart {
                     message_id: msg.id,
                     model: msg.model,
+                    usage,
                 }
             } else {
                 StreamEvent::Unknown(line.to_string())
@@ -257,6 +298,7 @@ fn parse_raw_event(raw: RawEvent, line: &str) -> StreamEvent {
                         id: block.id.unwrap_or_default(),
                         name: block.name.unwrap_or_default(),
                     },
+                    "thinking" => ContentBlockType::Thinking,
                     _ => return StreamEvent::Unknown(line.to_string()),
                 };
                 StreamEvent::ContentBlockStart { index, block_type }
@@ -273,6 +315,9 @@ fn parse_raw_event(raw: RawEvent, line: &str) -> StreamEvent {
                     Some("input_json_delta") => {
                         Delta::InputJsonDelta(d.partial_json.unwrap_or_default())
                     }
+                    Some("thinking_delta") => {
+                        Delta::ThinkingDelta(d.thinking.or(d.text).unwrap_or_default())
+                    }
                     _ => return StreamEvent::Unknown(line.to_string()),
                 };
                 StreamEvent::ContentBlockDelta { index, delta }
@@ -287,8 +332,12 @@ fn parse_raw_event(raw: RawEvent, line: &str) -> StreamEvent {
         }
 
         "message_delta" => {
+            let usage = raw.usage.map(|u| Usage {
+                input_tokens: u.input_tokens.unwrap_or(0),
+                output_tokens: u.output_tokens.unwrap_or(0),
+            });
             let stop_reason = raw.delta.and_then(|d| d.stop_reason);
-            StreamEvent::MessageDelta { stop_reason }
+            StreamEvent::MessageDelta { stop_reason, usage }
         }
 
         "message_stop" => StreamEvent::MessageStop,
@@ -312,7 +361,7 @@ mod tests {
         let line = r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6","stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}},"session_id":"abc","uuid":"def"}"#;
         let event = parse_event(line);
         match event {
-            StreamEvent::MessageStart { message_id, model } => {
+            StreamEvent::MessageStart { message_id, model, .. } => {
                 assert_eq!(message_id, "msg_123");
                 assert_eq!(model, "claude-opus-4-6");
             }
@@ -371,7 +420,7 @@ mod tests {
         let line = r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":42}},"session_id":"abc","uuid":"def"}"#;
         let event = parse_event(line);
         match event {
-            StreamEvent::MessageDelta { stop_reason } => {
+            StreamEvent::MessageDelta { stop_reason, .. } => {
                 assert_eq!(stop_reason, Some("end_turn".to_string()));
             }
             other => panic!("Expected MessageDelta, got {:?}", other),
@@ -397,10 +446,16 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_system_hook_event_is_unknown() {
+    fn test_parse_system_hook_event() {
         let line = r#"{"type":"system","subtype":"hook_started","hook_id":"abc","session_id":"def"}"#;
         let event = parse_event(line);
-        assert!(matches!(event, StreamEvent::Unknown(_)));
+        match event {
+            StreamEvent::SystemHook { subtype, hook_id } => {
+                assert_eq!(subtype, "hook_started");
+                assert_eq!(hook_id, Some("abc".to_string()));
+            }
+            other => panic!("Expected SystemHook, got {:?}", other),
+        }
     }
 
     #[test]
@@ -443,7 +498,7 @@ mod tests {
         let line = r#"{"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6","stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}"#;
         let event = parse_event(line);
         match event {
-            StreamEvent::MessageStart { message_id, model } => {
+            StreamEvent::MessageStart { message_id, model, .. } => {
                 assert_eq!(message_id, "msg_123");
                 assert_eq!(model, "claude-opus-4-6");
             }
@@ -529,6 +584,66 @@ mod tests {
         let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"session_id":"abc"}"#;
         let event = parse_event(line);
         assert!(matches!(event, StreamEvent::Unknown(_)));
+    }
+
+    // --- Thinking blocks ---
+
+    #[test]
+    fn test_parse_thinking_content_block_start() {
+        let line = r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}},"session_id":"abc"}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::ContentBlockStart { index, block_type } => {
+                assert_eq!(index, 0);
+                assert!(matches!(block_type, ContentBlockType::Thinking));
+            }
+            other => panic!("Expected ContentBlockStart(Thinking), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_thinking_delta() {
+        let line = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me think..."}},"session_id":"abc"}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::ContentBlockDelta { index, delta } => {
+                assert_eq!(index, 0);
+                match delta {
+                    Delta::ThinkingDelta(text) => assert_eq!(text, "Let me think..."),
+                    other => panic!("Expected ThinkingDelta, got {:?}", other),
+                }
+            }
+            other => panic!("Expected ContentBlockDelta, got {:?}", other),
+        }
+    }
+
+    // --- Usage extraction ---
+
+    #[test]
+    fn test_message_start_extracts_usage() {
+        let line = r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6","stop_reason":null,"usage":{"input_tokens":100,"output_tokens":5}}},"session_id":"abc"}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::MessageStart { usage, .. } => {
+                let u = usage.expect("Expected usage data");
+                assert_eq!(u.input_tokens, 100);
+                assert_eq!(u.output_tokens, 5);
+            }
+            other => panic!("Expected MessageStart, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_message_delta_extracts_usage() {
+        let line = r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":42}},"session_id":"abc"}"#;
+        let event = parse_event(line);
+        match event {
+            StreamEvent::MessageDelta { usage, .. } => {
+                let u = usage.expect("Expected usage data");
+                assert_eq!(u.output_tokens, 42);
+            }
+            other => panic!("Expected MessageDelta, got {:?}", other),
+        }
     }
 
     // --- Edge cases ---
