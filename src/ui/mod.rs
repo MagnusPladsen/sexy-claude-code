@@ -4,6 +4,7 @@ pub mod header;
 pub mod input;
 pub mod overlay;
 pub mod status_bar;
+pub mod toast;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -15,11 +16,13 @@ use ratatui::Frame;
 use crate::app::CompletionState;
 use crate::claude::conversation::Conversation;
 use crate::theme::Theme;
+use crate::ui::toast::Toast;
 use claude_pane::ClaudePane;
 use header::{Header, HEADER_HEIGHT};
 use input::{InputEditor, InputWidget};
 use overlay::{OverlayState, OverlayWidget};
 use status_bar::StatusBar;
+use toast::ToastWidget;
 
 /// Render the full UI layout.
 #[allow(clippy::too_many_arguments)]
@@ -32,6 +35,7 @@ pub fn render(
     scroll_offset: usize,
     is_streaming: bool,
     completion: Option<&CompletionState>,
+    toast: Option<&Toast>,
 ) {
     let size = frame.area();
 
@@ -77,6 +81,11 @@ pub fn render(
 
     // Status bar
     frame.render_widget(StatusBar::new(&theme.name, theme), chunks[3]);
+
+    // Toast notification (floats above status bar)
+    if let Some(t) = toast {
+        frame.render_widget(ToastWidget::new(t, theme), size);
+    }
 }
 
 /// Render the slash command completion popup just above the input area.
@@ -87,7 +96,23 @@ fn render_completion_popup(buf: &mut Buffer, state: &CompletionState, input_area
 
     let max_visible = 8usize.min(state.matches.len());
     let popup_height = max_visible as u16 + 2; // +2 for borders
-    let popup_width = 40u16.min(input_area.width);
+
+    // Auto-fit width based on longest visible item, capped at 70% terminal width
+    let max_width = (input_area.width as f32 * 0.7) as u16;
+    let content_width = state
+        .matches
+        .iter()
+        .map(|item| {
+            let name_len = item.name.len() + 5; // " ▸ /" + name
+            if item.description.is_empty() {
+                name_len
+            } else {
+                name_len + 2 + item.description.len() // "  " + description
+            }
+        })
+        .max()
+        .unwrap_or(20) as u16;
+    let popup_width = (content_width + 4).max(20).min(max_width); // +4 for borders + padding
 
     // Position popup just above the input area
     let popup_y = input_area.y.saturating_sub(popup_height);
@@ -118,14 +143,14 @@ fn render_completion_popup(buf: &mut Buffer, state: &CompletionState, input_area
         0
     };
 
-    for (vi, cmd) in state.matches.iter().skip(scroll).take(max_visible).enumerate() {
+    for (vi, item) in state.matches.iter().skip(scroll).take(max_visible).enumerate() {
         let y = inner.y + vi as u16;
         if y >= inner.bottom() {
             break;
         }
 
         let is_selected = vi + scroll == state.selected;
-        let style = if is_selected {
+        let name_style = if is_selected {
             Style::default()
                 .fg(theme.primary)
                 .bg(theme.overlay)
@@ -133,26 +158,62 @@ fn render_completion_popup(buf: &mut Buffer, state: &CompletionState, input_area
         } else {
             Style::default().fg(theme.foreground).bg(theme.surface)
         };
+        let desc_style = if is_selected {
+            Style::default()
+                .fg(theme.info)
+                .bg(theme.overlay)
+        } else {
+            Style::default()
+                .fg(theme.info)
+                .bg(theme.surface)
+        };
 
         // Fill row background
+        let bg_style = if is_selected {
+            Style::default().bg(theme.overlay)
+        } else {
+            Style::default().bg(theme.surface)
+        };
         for x in inner.x..inner.right() {
             if let Some(cell) = buf.cell_mut((x, y)) {
                 cell.set_char(' ');
-                cell.set_style(style);
+                cell.set_style(bg_style);
             }
         }
 
-        // Write the command with / prefix
-        let marker = if is_selected { " ▸ " } else { "   " };
-        let text = format!("{marker}/{cmd}");
-        for (i, ch) in text.chars().enumerate() {
-            let x = inner.x + i as u16;
-            if x >= inner.right() {
+        // Write the command name with / prefix
+        let marker = if is_selected { " \u{25b8} " } else { "   " };
+        let name_text = format!("{marker}/{}", item.name);
+        let mut col = inner.x;
+        for ch in name_text.chars() {
+            if col >= inner.right() {
                 break;
             }
-            if let Some(cell) = buf.cell_mut((x, y)) {
+            if let Some(cell) = buf.cell_mut((col, y)) {
                 cell.set_char(ch);
-                cell.set_style(style);
+                cell.set_style(name_style);
+            }
+            col += 1;
+        }
+
+        // Write description (dim) if available
+        if !item.description.is_empty() && col + 2 < inner.right() {
+            // Add separator
+            for _ in 0..2 {
+                if col >= inner.right() {
+                    break;
+                }
+                col += 1;
+            }
+            for ch in item.description.chars() {
+                if col >= inner.right() {
+                    break;
+                }
+                if let Some(cell) = buf.cell_mut((col, y)) {
+                    cell.set_char(ch);
+                    cell.set_style(desc_style);
+                }
+                col += 1;
             }
         }
     }
