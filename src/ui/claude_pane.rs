@@ -363,10 +363,11 @@ fn render_tool_use(
     }
 }
 
-/// Maximum diff lines to show before truncating.
+/// Maximum diff lines to show inline before truncating.
 const DIFF_MAX_LINES: usize = 20;
 
-/// Render a diff preview for Edit tool invocations.
+/// Render a unified diff preview for Edit tool invocations.
+/// Uses proper LCS-based diff algorithm with context lines.
 fn render_edit_diff(input: &str, lines: &mut Vec<StyledLine>, theme: &Theme) {
     let value: serde_json::Value = match serde_json::from_str(input) {
         Ok(v) => v,
@@ -379,51 +380,46 @@ fn render_edit_diff(input: &str, lines: &mut Vec<StyledLine>, theme: &Theme) {
         return;
     }
 
+    let ops = crate::diff::diff_lines(old, new);
+    let visible = crate::diff::with_context(&ops, 2);
+
+    if visible.is_empty() {
+        return;
+    }
+
     let removed_style = Style::default().fg(Color::Rgb(255, 100, 100));
     let added_style = Style::default().fg(Color::Rgb(100, 255, 100));
+    let context_style = Style::default()
+        .fg(theme.foreground)
+        .add_modifier(Modifier::DIM);
 
-    let mut diff_lines = 0;
-    let mut total_lines = 0;
+    let total = visible.len();
+    let mut shown = 0;
 
-    // Count total lines for truncation
-    for line in old.lines() {
-        if !new.contains(line) {
-            total_lines += 1;
-        }
-    }
-    for line in new.lines() {
-        if !old.contains(line) {
-            total_lines += 1;
-        }
-    }
-
-    // Show removed lines
-    for line in old.lines() {
-        if diff_lines >= DIFF_MAX_LINES {
+    for op in &visible {
+        if shown >= DIFF_MAX_LINES {
             break;
         }
-        if !new.contains(line) {
-            lines.push(StyledLine::plain(&format!("    - {line}"), removed_style));
-            diff_lines += 1;
+        match op {
+            crate::diff::DiffOp::Equal(line) => {
+                lines.push(StyledLine::plain(&format!("      {line}"), context_style));
+            }
+            crate::diff::DiffOp::Remove(line) => {
+                lines.push(StyledLine::plain(&format!("    - {line}"), removed_style));
+            }
+            crate::diff::DiffOp::Add(line) => {
+                lines.push(StyledLine::plain(&format!("    + {line}"), added_style));
+            }
         }
-    }
-    // Show added lines
-    for line in new.lines() {
-        if diff_lines >= DIFF_MAX_LINES {
-            break;
-        }
-        if !old.contains(line) {
-            lines.push(StyledLine::plain(&format!("    + {line}"), added_style));
-            diff_lines += 1;
-        }
+        shown += 1;
     }
 
-    if total_lines > DIFF_MAX_LINES {
+    if total > DIFF_MAX_LINES {
         let dim_style = Style::default()
             .fg(theme.info)
             .add_modifier(Modifier::DIM);
         lines.push(StyledLine::plain(
-            &format!("    ... {} more diff lines", total_lines - DIFF_MAX_LINES),
+            &format!("    ... {} more diff lines", total - DIFF_MAX_LINES),
             dim_style,
         ));
     }

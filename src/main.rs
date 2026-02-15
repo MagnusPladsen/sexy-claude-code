@@ -1,6 +1,7 @@
 mod app;
 mod claude;
 mod config;
+mod diff;
 mod git;
 mod keybindings;
 mod pty;
