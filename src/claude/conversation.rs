@@ -19,6 +19,13 @@ pub enum ContentBlock {
         name: String,
         input: String,
     },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        is_error: bool,
+        /// Whether this result is collapsed in the UI (auto-collapsed if >20 lines).
+        collapsed: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +166,24 @@ impl Conversation {
                 }
                 self.streaming = false;
                 self.had_streaming_response = false;
+            }
+
+            StreamEvent::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                // Append tool result to the last assistant message.
+                // The renderer matches it to its ToolUse by ID.
+                if let Some(msg) = self.messages.last_mut() {
+                    let collapsed = content.lines().count() > 20;
+                    msg.content.push(ContentBlock::ToolResult {
+                        tool_use_id: tool_use_id.clone(),
+                        content: content.clone(),
+                        is_error: *is_error,
+                        collapsed,
+                    });
+                }
             }
 
             StreamEvent::SystemInit { .. } | StreamEvent::Unknown(_) => {
@@ -397,6 +422,84 @@ mod tests {
         assert_eq!(conv.messages.len(), 2);
         assert_eq!(conv.messages[0].role, Role::User);
         assert_eq!(conv.messages[1].role, Role::Assistant);
+    }
+
+    #[test]
+    fn test_tool_result_appended_to_message() {
+        let mut conv = Conversation::new();
+
+        // Start message with a tool use
+        conv.apply_event(&StreamEvent::MessageStart {
+            message_id: "msg_001".to_string(),
+            model: "claude-opus-4-6".to_string(),
+        });
+        conv.apply_event(&StreamEvent::ContentBlockStart {
+            index: 0,
+            block_type: ContentBlockType::ToolUse {
+                id: "toolu_abc".to_string(),
+                name: "Read".to_string(),
+            },
+        });
+        conv.apply_event(&StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: Delta::InputJsonDelta(r#"{"file_path":"test.txt"}"#.to_string()),
+        });
+        conv.apply_event(&StreamEvent::ContentBlockStop { index: 0 });
+
+        // Tool result arrives
+        conv.apply_event(&StreamEvent::ToolResult {
+            tool_use_id: "toolu_abc".to_string(),
+            content: "hello world\n".to_string(),
+            is_error: false,
+        });
+
+        let msg = &conv.messages[0];
+        assert_eq!(msg.content.len(), 2);
+        match &msg.content[1] {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                collapsed,
+            } => {
+                assert_eq!(tool_use_id, "toolu_abc");
+                assert_eq!(content, "hello world\n");
+                assert!(!is_error);
+                assert!(!collapsed); // <20 lines, not collapsed
+            }
+            other => panic!("Expected ToolResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_tool_result_long_output_auto_collapsed() {
+        let mut conv = Conversation::new();
+
+        conv.apply_event(&StreamEvent::MessageStart {
+            message_id: "msg_001".to_string(),
+            model: "claude-opus-4-6".to_string(),
+        });
+        conv.apply_event(&StreamEvent::ContentBlockStart {
+            index: 0,
+            block_type: ContentBlockType::ToolUse {
+                id: "toolu_long".to_string(),
+                name: "Bash".to_string(),
+            },
+        });
+        conv.apply_event(&StreamEvent::ContentBlockStop { index: 0 });
+
+        // 30-line output should auto-collapse
+        let long_output = (0..30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        conv.apply_event(&StreamEvent::ToolResult {
+            tool_use_id: "toolu_long".to_string(),
+            content: long_output,
+            is_error: false,
+        });
+
+        match &conv.messages[0].content[1] {
+            ContentBlock::ToolResult { collapsed, .. } => assert!(collapsed),
+            other => panic!("Expected ToolResult, got {:?}", other),
+        }
     }
 
     #[test]
