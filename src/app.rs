@@ -802,6 +802,11 @@ impl App {
                 hint: "Ctrl+R".to_string(),
             },
             OverlayItem {
+                label: "Compact Context".to_string(),
+                value: "compact".to_string(),
+                hint: String::new(),
+            },
+            OverlayItem {
                 label: "Switch Theme".to_string(),
                 value: "theme".to_string(),
                 hint: "Ctrl+T".to_string(),
@@ -882,6 +887,13 @@ impl App {
                     match value.as_str() {
                         "continue" => self.continue_last_session().await?,
                         "resume" => self.open_session_picker(),
+                        "compact" => {
+                            self.pending_slash_command = Some("/compact".to_string());
+                            if let Some(ref mut claude) = self.claude {
+                                claude.send_message("/compact").await?;
+                            }
+                            self.toast = Some(Toast::new("Compacting context...".to_string()));
+                        }
                         "theme" => self.open_theme_picker(),
                         "quit" => self.should_quit = true,
                         _ => {}
