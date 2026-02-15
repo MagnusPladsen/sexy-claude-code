@@ -5,6 +5,21 @@ use tokio::sync::mpsc;
 
 use crate::claude::events::{parse_event, StreamEvent};
 
+/// Options for spawning a Claude CLI process.
+#[derive(Default)]
+pub struct SpawnOptions {
+    /// Resume a specific session by ID.
+    pub resume_session_id: Option<String>,
+    /// Continue the most recent session.
+    pub continue_session: bool,
+    /// Model override (e.g. "claude-sonnet-4-5-20250929").
+    pub model: Option<String>,
+    /// Effort level ("low", "medium", "high").
+    pub effort: Option<String>,
+    /// Max budget in USD.
+    pub max_budget_usd: Option<f64>,
+}
+
 pub struct ClaudeProcess {
     child: Child,
     stdin: tokio::process::ChildStdin,
@@ -14,7 +29,7 @@ impl ClaudeProcess {
     /// Spawn claude in print mode with stream-json I/O.
     /// Returns the process handle and a receiver for parsed events.
     pub fn spawn(command: &str) -> Result<(Self, mpsc::UnboundedReceiver<StreamEvent>)> {
-        Self::spawn_inner(command, None)
+        Self::spawn_with_options(command, SpawnOptions::default())
     }
 
     /// Spawn claude resuming an existing session.
@@ -22,12 +37,32 @@ impl ClaudeProcess {
         command: &str,
         session_id: &str,
     ) -> Result<(Self, mpsc::UnboundedReceiver<StreamEvent>)> {
-        Self::spawn_inner(command, Some(session_id))
+        Self::spawn_with_options(
+            command,
+            SpawnOptions {
+                resume_session_id: Some(session_id.to_string()),
+                ..Default::default()
+            },
+        )
     }
 
-    fn spawn_inner(
+    /// Spawn claude continuing the most recent session.
+    pub fn spawn_with_continue(
         command: &str,
-        resume_session_id: Option<&str>,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<StreamEvent>)> {
+        Self::spawn_with_options(
+            command,
+            SpawnOptions {
+                continue_session: true,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Spawn with full options control.
+    pub fn spawn_with_options(
+        command: &str,
+        options: SpawnOptions,
     ) -> Result<(Self, mpsc::UnboundedReceiver<StreamEvent>)> {
         let parts: Vec<&str> = command.split_whitespace().collect();
         let (program, args) = parts.split_first().context("Empty command")?;
@@ -41,8 +76,20 @@ impl ClaudeProcess {
             "--verbose",
             "--include-partial-messages",
         ]);
-        if let Some(session_id) = resume_session_id {
+        if let Some(ref session_id) = options.resume_session_id {
             cmd.args(["--resume", session_id]);
+        }
+        if options.continue_session {
+            cmd.arg("--continue");
+        }
+        if let Some(ref model) = options.model {
+            cmd.args(["--model", model]);
+        }
+        if let Some(ref effort) = options.effort {
+            cmd.args(["--effort", effort]);
+        }
+        if let Some(budget) = options.max_budget_usd {
+            cmd.args(["--max-budget-usd", &budget.to_string()]);
         }
         // Prevent "cannot run inside another Claude Code session" error
         cmd.env_remove("CLAUDECODE");
