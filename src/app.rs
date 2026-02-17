@@ -43,6 +43,7 @@ const KNOWN_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("model", "Switch AI model"),
     ("permissions", "Show or update tool permissions"),
     ("plan", "Enter plan mode"),
+    ("plugins", "Browse and manage plugins"),
     ("rename", "Rename current session"),
     ("resume", "Resume a previous session"),
     ("rewind", "Rewind to earlier state"),
@@ -72,6 +73,7 @@ enum LocalAction {
     ShowConfig,
     ShowModel,
     ShowMemory,
+    ShowPlugins,
     Exit,
     ChangeTheme,
 }
@@ -91,6 +93,33 @@ struct UserQuestion {
 struct UserQuestionOption {
     label: String,
     description: String,
+}
+
+/// Metadata for a plugin in the browser.
+#[derive(Clone)]
+pub struct PluginInfo {
+    pub name: String,
+    pub marketplace: String,
+    pub description: String,
+    pub is_mcp: bool,
+    pub installed: bool,
+    pub enabled: bool,
+}
+
+impl PluginInfo {
+    pub fn full_name(&self) -> String {
+        format!("{}@{}", self.name, self.marketplace)
+    }
+
+    pub fn status_icon(&self) -> &str {
+        if self.installed && self.enabled {
+            "[+]"
+        } else if self.installed {
+            "[-]"
+        } else {
+            "[ ]"
+        }
+    }
 }
 
 /// What to do when a TextInput overlay is confirmed.
@@ -126,6 +155,11 @@ enum AppMode {
         cursor: usize,
         /// For multi-select: tracks which options are toggled on.
         selected: Vec<bool>,
+    },
+    PluginBrowser {
+        plugins: Vec<PluginInfo>,
+        cursor: usize,
+        scroll: usize,
     },
 }
 
@@ -574,6 +608,7 @@ impl App {
             AppMode::HistorySearch { .. } => self.handle_key_history_search(key),
             AppMode::TextInput { .. } => self.handle_key_text_input(key).await,
             AppMode::UserQuestion { .. } => self.handle_key_user_question(key).await,
+            AppMode::PluginBrowser { .. } => self.handle_key_plugin_browser(key).await,
         }
     }
 
@@ -613,6 +648,11 @@ impl App {
 
         if ctrl && key.code == KeyCode::Char('f') {
             self.open_file_context_panel();
+            return Ok(());
+        }
+
+        if ctrl && key.code == KeyCode::Char('p') {
+            self.open_plugin_browser();
             return Ok(());
         }
 
@@ -745,6 +785,9 @@ impl App {
                             LocalAction::ShowMemory => {
                                 self.open_memory_viewer();
                             }
+                            LocalAction::ShowPlugins => {
+                                self.open_plugin_browser();
+                            }
                             LocalAction::Exit => {
                                 self.should_quit = true;
                             }
@@ -848,7 +891,7 @@ impl App {
             | AppMode::ThemePicker(ref mut state)
             | AppMode::SessionPicker(ref mut state)
             | AppMode::CheckpointTimeline(ref mut state) => f(state),
-            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } => {}
+            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } | AppMode::PluginBrowser { .. } => {}
         }
     }
 
@@ -977,6 +1020,7 @@ impl App {
             "/config" => Some(LocalAction::ShowConfig),
             "/model" => Some(LocalAction::ShowModel),
             "/memory" => Some(LocalAction::ShowMemory),
+            "/plugins" => Some(LocalAction::ShowPlugins),
             "/exit" | "/quit" => Some(LocalAction::Exit),
             "/theme" => Some(LocalAction::ChangeTheme),
             _ => None,
@@ -1401,7 +1445,7 @@ impl App {
                     self.toast = Some(Toast::new(format!("Rewinding to turn {}...", value)));
                 }
             }
-            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } => {}
+            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } | AppMode::PluginBrowser { .. } => {}
         }
         Ok(())
     }
@@ -1439,6 +1483,7 @@ impl App {
         lines.push("   Ctrl+R              History search".to_string());
         lines.push("   Ctrl+I              CLAUDE.md viewer".to_string());
         lines.push("   Ctrl+M              Auto-memory viewer".to_string());
+        lines.push("   Ctrl+P              Plugin browser".to_string());
         lines.push("   Ctrl+F              File context panel".to_string());
         lines.push("   Ctrl+D              Diff viewer".to_string());
         lines.push("   Ctrl+E              Toggle tool blocks".to_string());
@@ -1549,6 +1594,234 @@ impl App {
             lines,
             scroll: 0,
         };
+    }
+
+    fn discover_plugins() -> Vec<PluginInfo> {
+        let home = match dirs::home_dir() {
+            Some(h) => h,
+            None => return Vec::new(),
+        };
+        let marketplaces_dir = home.join(".claude/plugins/marketplaces");
+        let installed_path = home.join(".claude/plugins/installed_plugins.json");
+        let settings_path = home.join(".claude/settings.json");
+
+        // Parse installed plugins
+        let installed: std::collections::HashSet<String> = std::fs::read_to_string(&installed_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("plugins")?.as_object().cloned())
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
+
+        // Parse enabled plugins
+        let enabled: std::collections::HashSet<String> = std::fs::read_to_string(&settings_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("enabledPlugins")?.as_object().cloned())
+            .map(|m| {
+                m.into_iter()
+                    .filter(|(_, v)| v.as_bool() == Some(true))
+                    .map(|(k, _)| k)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut plugins = Vec::new();
+
+        // Scan each marketplace
+        if let Ok(entries) = std::fs::read_dir(&marketplaces_dir) {
+            for entry in entries.flatten() {
+                let marketplace_name = entry.file_name().to_string_lossy().to_string();
+                let marketplace_path = entry.path();
+
+                // Scan plugins/ and external_plugins/ subdirs
+                for (subdir, is_mcp) in [("plugins", false), ("external_plugins", true)] {
+                    let dir = marketplace_path.join(subdir);
+                    if let Ok(plugin_entries) = std::fs::read_dir(&dir) {
+                        for pe in plugin_entries.flatten() {
+                            let name = pe.file_name().to_string_lossy().to_string();
+                            let manifest_path = pe.path().join(".claude-plugin/plugin.json");
+                            let description = std::fs::read_to_string(&manifest_path)
+                                .ok()
+                                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                                .and_then(|v| v.get("description")?.as_str().map(|s| s.to_string()))
+                                .unwrap_or_default();
+
+                            // Check if has .mcp.json (external plugins always MCP, but regular
+                            // plugins might also have one)
+                            let has_mcp = is_mcp || pe.path().join(".mcp.json").exists();
+
+                            let full_name = format!("{}@{}", name, marketplace_name);
+                            plugins.push(PluginInfo {
+                                name: name.clone(),
+                                marketplace: marketplace_name.clone(),
+                                description,
+                                is_mcp: has_mcp,
+                                installed: installed.contains(&full_name),
+                                enabled: enabled.contains(&full_name),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort: enabled first, then installed, then available; alphabetically within groups
+        plugins.sort_by(|a, b| {
+            let rank = |p: &PluginInfo| -> u8 {
+                if p.enabled { 0 } else if p.installed { 1 } else { 2 }
+            };
+            rank(a).cmp(&rank(b)).then(a.name.cmp(&b.name))
+        });
+
+        plugins
+    }
+
+    fn open_plugin_browser(&mut self) {
+        let plugins = Self::discover_plugins();
+        if plugins.is_empty() {
+            self.toast = Some(Toast::new("No plugins found".to_string()));
+            return;
+        }
+        self.mode = AppMode::PluginBrowser {
+            plugins,
+            cursor: 0,
+            scroll: 0,
+        };
+    }
+
+    async fn handle_key_plugin_browser(&mut self, key: event::KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let AppMode::PluginBrowser { ref mut cursor, .. } = self.mode {
+                    *cursor = cursor.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let AppMode::PluginBrowser { ref mut cursor, ref plugins, .. } = self.mode {
+                    if *cursor + 1 < plugins.len() {
+                        *cursor += 1;
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                // Open plugin README in TextViewer
+                if let AppMode::PluginBrowser { ref plugins, cursor, .. } = self.mode {
+                    if let Some(plugin) = plugins.get(cursor) {
+                        let home = dirs::home_dir().unwrap_or_default();
+                        let marketplace_dir = home.join(".claude/plugins/marketplaces").join(&plugin.marketplace);
+                        let subdir = if plugin.is_mcp { "external_plugins" } else { "plugins" };
+                        let readme_path = marketplace_dir.join(subdir).join(&plugin.name).join("README.md");
+
+                        let content = std::fs::read_to_string(&readme_path)
+                            .unwrap_or_else(|_| format!("# {}\n\n{}\n\nNo README available.", plugin.name, plugin.description));
+                        let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+                        self.mode = AppMode::TextViewer {
+                            title: format!("{} ({})", plugin.name, plugin.marketplace),
+                            lines,
+                            scroll: 0,
+                        };
+                    }
+                }
+            }
+            KeyCode::Char(' ') => {
+                // Toggle enable/disable
+                let cmd = if let AppMode::PluginBrowser { ref plugins, cursor, .. } = self.mode {
+                    plugins.get(cursor).filter(|p| p.installed).map(|p| {
+                        let action = if p.enabled { "disable" } else { "enable" };
+                        (action.to_string(), p.full_name())
+                    })
+                } else {
+                    None
+                };
+                if let Some((action, name)) = cmd {
+                    let output = std::process::Command::new("claude")
+                        .args(["plugin", &action, &name])
+                        .env_remove("CLAUDECODE")
+                        .env_remove("CLAUDE_CODE_ENTRYPOINT")
+                        .output();
+                    match output {
+                        Ok(o) if o.status.success() => {
+                            self.toast = Some(Toast::new(format!("Plugin {action}d: {name}")));
+                            // Refresh the plugin list
+                            let plugins = Self::discover_plugins();
+                            self.mode = AppMode::PluginBrowser { plugins, cursor: 0, scroll: 0 };
+                        }
+                        Ok(o) => {
+                            let err = String::from_utf8_lossy(&o.stderr);
+                            self.toast = Some(Toast::new(format!("Failed: {err}")));
+                        }
+                        Err(e) => {
+                            self.toast = Some(Toast::new(format!("Error: {e}")));
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('i') => {
+                // Install uninstalled plugin
+                let cmd = if let AppMode::PluginBrowser { ref plugins, cursor, .. } = self.mode {
+                    plugins.get(cursor).filter(|p| !p.installed).map(|p| p.full_name())
+                } else {
+                    None
+                };
+                if let Some(name) = cmd {
+                    self.toast = Some(Toast::new(format!("Installing {name}...")));
+                    let output = std::process::Command::new("claude")
+                        .args(["plugin", "install", &name])
+                        .env_remove("CLAUDECODE")
+                        .env_remove("CLAUDE_CODE_ENTRYPOINT")
+                        .output();
+                    match output {
+                        Ok(o) if o.status.success() => {
+                            self.toast = Some(Toast::new(format!("Installed: {name}")));
+                            let plugins = Self::discover_plugins();
+                            self.mode = AppMode::PluginBrowser { plugins, cursor: 0, scroll: 0 };
+                        }
+                        Ok(o) => {
+                            let err = String::from_utf8_lossy(&o.stderr);
+                            self.toast = Some(Toast::new(format!("Install failed: {err}")));
+                        }
+                        Err(e) => {
+                            self.toast = Some(Toast::new(format!("Error: {e}")));
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('u') => {
+                // Uninstall installed plugin
+                let cmd = if let AppMode::PluginBrowser { ref plugins, cursor, .. } = self.mode {
+                    plugins.get(cursor).filter(|p| p.installed).map(|p| p.full_name())
+                } else {
+                    None
+                };
+                if let Some(name) = cmd {
+                    let output = std::process::Command::new("claude")
+                        .args(["plugin", "uninstall", &name])
+                        .env_remove("CLAUDECODE")
+                        .env_remove("CLAUDE_CODE_ENTRYPOINT")
+                        .output();
+                    match output {
+                        Ok(o) if o.status.success() => {
+                            self.toast = Some(Toast::new(format!("Uninstalled: {name}")));
+                            let plugins = Self::discover_plugins();
+                            self.mode = AppMode::PluginBrowser { plugins, cursor: 0, scroll: 0 };
+                        }
+                        Ok(o) => {
+                            let err = String::from_utf8_lossy(&o.stderr);
+                            self.toast = Some(Toast::new(format!("Uninstall failed: {err}")));
+                        }
+                        Err(e) => {
+                            self.toast = Some(Toast::new(format!("Error: {e}")));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn open_diff_viewer(&mut self) {
@@ -1751,7 +2024,7 @@ impl App {
             AppMode::ThemePicker(state) => Some(("Select Theme", state)),
             AppMode::SessionPicker(state) => Some(("Resume Session", state)),
             AppMode::CheckpointTimeline(state) => Some(("Rewind to Checkpoint", state)),
-            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } => None,
+            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } | AppMode::PluginBrowser { .. } => None,
         };
 
         // Clamp scroll before rendering
@@ -1808,6 +2081,12 @@ impl App {
             }
             _ => None,
         };
+        let plugin_browser = match &self.mode {
+            AppMode::PluginBrowser { plugins, cursor, scroll } => {
+                Some((plugins.as_slice(), *cursor, *scroll))
+            }
+            _ => None,
+        };
 
         terminal.draw(|frame| {
             let active_tool = conversation.active_tool_name()
@@ -1855,6 +2134,9 @@ impl App {
                     question.multi_select,
                     theme,
                 );
+            }
+            if let Some((plugins, cursor, scroll)) = plugin_browser {
+                ui::render_plugin_browser(frame, plugins, cursor, scroll, theme);
             }
         })?;
 

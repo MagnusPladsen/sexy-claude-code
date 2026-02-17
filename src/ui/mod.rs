@@ -14,7 +14,7 @@ use ratatui::symbols::border;
 use ratatui::widgets::{Block, Borders, Clear, Widget};
 use ratatui::Frame;
 
-use crate::app::CompletionState;
+use crate::app::{CompletionState, PluginInfo};
 use crate::claude::conversation::Conversation;
 use crate::diff::{self, DiffOp};
 use crate::git::GitInfo;
@@ -761,6 +761,144 @@ pub fn render_user_question(
                 }
                 c += 1;
             }
+        }
+    }
+}
+
+/// Render a plugin browser overlay showing available/installed/enabled plugins.
+pub fn render_plugin_browser(
+    frame: &mut Frame,
+    plugins: &[PluginInfo],
+    cursor: usize,
+    _scroll: usize,
+    theme: &Theme,
+) {
+    let area = frame.area();
+
+    // Calculate popup size (~80% of screen)
+    let width = (area.width * 80 / 100).max(50).min(area.width.saturating_sub(4));
+    let height = (area.height * 80 / 100).max(10).min(area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = Rect::new(x, y, width, height);
+
+    let buf = frame.buffer_mut();
+    Clear.render(popup, buf);
+
+    let enabled_count = plugins.iter().filter(|p| p.enabled).count();
+    let title = format!(" Plugins ({} available, {} enabled) ", plugins.len(), enabled_count);
+    let hint = " Enter:readme  Space:toggle  i:install  u:uninstall  Esc:close ";
+
+    let block = Block::default()
+        .title(title)
+        .title_style(Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))
+        .title_bottom(hint)
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(theme.border_focused))
+        .style(Style::default().bg(theme.surface).fg(theme.foreground));
+
+    let inner = block.inner(popup);
+    block.render(popup, buf);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let visible = inner.height as usize;
+    // Scroll so cursor is always visible
+    let scroll = if cursor >= visible {
+        cursor - visible + 1
+    } else {
+        0
+    };
+
+    for (i, plugin) in plugins.iter().enumerate().skip(scroll).take(visible) {
+        let row_y = inner.y + (i - scroll) as u16;
+        let is_selected = i == cursor;
+
+        // Status icon with color
+        let icon = plugin.status_icon();
+        let icon_color = if plugin.enabled {
+            theme.success
+        } else if plugin.installed {
+            theme.warning
+        } else {
+            theme.input_placeholder
+        };
+
+        let row_bg = if is_selected { theme.overlay } else { theme.surface };
+        let icon_style = Style::default().fg(icon_color).bg(row_bg);
+        let name_style = if is_selected {
+            Style::default().fg(theme.primary).bg(row_bg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.foreground).bg(row_bg)
+        };
+        let desc_style = Style::default().fg(theme.input_placeholder).bg(row_bg);
+        let tag_style = Style::default().fg(theme.info).bg(row_bg);
+
+        // Fill row background
+        for col in inner.x..inner.right() {
+            if let Some(cell) = buf.cell_mut((col, row_y)) {
+                cell.set_char(' ');
+                cell.set_style(Style::default().bg(row_bg));
+            }
+        }
+
+        let mut col = inner.x;
+        // Write " [+] "
+        let icon_text = format!(" {} ", icon);
+        for ch in icon_text.chars() {
+            if col >= inner.right() { break; }
+            if let Some(cell) = buf.cell_mut((col, row_y)) {
+                cell.set_char(ch);
+                cell.set_style(icon_style);
+            }
+            col += 1;
+        }
+
+        // Write plugin name
+        for ch in plugin.name.chars() {
+            if col >= inner.right() { break; }
+            if let Some(cell) = buf.cell_mut((col, row_y)) {
+                cell.set_char(ch);
+                cell.set_style(name_style);
+            }
+            col += 1;
+        }
+
+        // Write MCP tag if applicable
+        if plugin.is_mcp {
+            let tag = " [MCP]";
+            for ch in tag.chars() {
+                if col >= inner.right() { break; }
+                if let Some(cell) = buf.cell_mut((col, row_y)) {
+                    cell.set_char(ch);
+                    cell.set_style(tag_style);
+                }
+                col += 1;
+            }
+        }
+
+        // Write " — description"
+        let sep = " — ";
+        for ch in sep.chars() {
+            if col >= inner.right() { break; }
+            if let Some(cell) = buf.cell_mut((col, row_y)) {
+                cell.set_char(ch);
+                cell.set_style(desc_style);
+            }
+            col += 1;
+        }
+
+        // Truncate description to fit
+        for ch in plugin.description.chars() {
+            if col >= inner.right() { break; }
+            if let Some(cell) = buf.cell_mut((col, row_y)) {
+                cell.set_char(ch);
+                cell.set_style(desc_style);
+            }
+            col += 1;
         }
     }
 }
