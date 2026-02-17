@@ -64,14 +64,16 @@ impl Widget for ClaudePane<'_> {
         // Convert conversation to wrapped lines
         let mut lines = render_conversation_with_options(self.conversation, area.width as usize, self.theme, self.tools_expanded);
 
-        // Show spinner when waiting for tool execution
+        // Show spinner when waiting for tool execution or streaming
         if self.conversation.is_awaiting_tool_result() || self.conversation.is_streaming() {
             let spinner_char =
                 SPINNER_FRAMES[(self.frame_count as usize / 2) % SPINNER_FRAMES.len()];
             let label = if self.conversation.is_awaiting_tool_result() {
-                "Running..."
+                let tool = self.conversation.active_tool_name().unwrap_or("tool");
+                let elapsed = self.conversation.tool_elapsed_secs().unwrap_or(0);
+                format!("Running {tool}... ({elapsed}s)")
             } else {
-                "Thinking..."
+                "Thinking...".to_string()
             };
             lines.push(StyledLine {
                 spans: vec![StyledSpan {

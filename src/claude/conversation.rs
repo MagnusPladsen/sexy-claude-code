@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crate::claude::events::{ContentBlockType, Delta, StreamEvent};
 
 // ---------------------------------------------------------------------------
@@ -61,6 +63,10 @@ pub struct Conversation {
     /// Tracks the ContentBlockType for each block index in the current message,
     /// so we know how to handle deltas and how to finalise blocks on stop.
     block_types: Vec<ContentBlockType>,
+    /// Name of the tool currently being executed (set on MessageStop with ToolUse).
+    active_tool_name: Option<String>,
+    /// When the current tool execution started (for elapsed time display).
+    tool_start_time: Option<Instant>,
 }
 
 impl Conversation {
@@ -73,6 +79,8 @@ impl Conversation {
             awaiting_tool_result: false,
             tool_input_buf: String::new(),
             block_types: Vec::new(),
+            active_tool_name: None,
+            tool_start_time: None,
         }
     }
 
@@ -191,13 +199,18 @@ impl Conversation {
                 self.had_streaming_response = true;
                 // Check if the last content block is a ToolUse — if so,
                 // tool execution is about to happen.
-                let has_pending_tool = self
+                let tool_name = self
                     .messages
                     .last()
                     .and_then(|m| m.content.last())
-                    .is_some_and(|b| matches!(b, ContentBlock::ToolUse { .. }));
-                if has_pending_tool {
+                    .and_then(|b| match b {
+                        ContentBlock::ToolUse { name, .. } => Some(name.clone()),
+                        _ => None,
+                    });
+                if let Some(name) = tool_name {
                     self.awaiting_tool_result = true;
+                    self.active_tool_name = Some(name);
+                    self.tool_start_time = Some(Instant::now());
                 }
             }
 
@@ -221,6 +234,8 @@ impl Conversation {
                 is_error,
             } => {
                 self.awaiting_tool_result = false;
+                self.active_tool_name = None;
+                self.tool_start_time = None;
                 // Append tool result to the last assistant message.
                 // The renderer matches it to its ToolUse by ID.
                 if let Some(msg) = self.messages.last_mut() {
@@ -250,6 +265,16 @@ impl Conversation {
     /// Whether a tool is currently executing (between MessageStop and ToolResult).
     pub fn is_awaiting_tool_result(&self) -> bool {
         self.awaiting_tool_result
+    }
+
+    /// Name of the tool currently being executed (if any).
+    pub fn active_tool_name(&self) -> Option<&str> {
+        self.active_tool_name.as_deref()
+    }
+
+    /// Elapsed seconds since the current tool started executing.
+    pub fn tool_elapsed_secs(&self) -> Option<u64> {
+        self.tool_start_time.map(|t| t.elapsed().as_secs())
     }
 
     /// Returns the text of the last text block in the last assistant message.
