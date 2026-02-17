@@ -8,9 +8,7 @@
 
 A beautiful terminal wrapper for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) built with Rust. It re-renders Claude Code's output inside a themed TUI shell with configurable colors, styled borders, and a clean status bar — without modifying Claude Code's behavior.
 
-<p align="center">
-  <img src="assets/screenshot.png" alt="sexy-claude screenshot" width="800">
-</p>
+<img width="1703" height="1377" alt="image" src="https://github.com/user-attachments/assets/9761c22a-0862-44c1-bca4-ae2f4072fe98" />
 
 ## Features
 
