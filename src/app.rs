@@ -22,6 +22,60 @@ use crate::ui::input::InputEditor;
 use crate::ui::overlay::{OverlayItem, OverlayState};
 use crate::ui::toast::Toast;
 
+/// Built-in workflow templates: (name, description, prompt).
+const WORKFLOW_TEMPLATES: &[(&str, &str, &str)] = &[
+    (
+        "Code Review",
+        "Review recent changes for bugs and improvements",
+        "Review the recent code changes in this session. Look for bugs, logic errors, security issues, and suggest improvements. Be specific about file and line numbers.",
+    ),
+    (
+        "Write Tests",
+        "Generate tests for recent changes",
+        "Write comprehensive tests for the code I've been working on in this session. Cover edge cases, error paths, and the main happy path. Use the project's existing test patterns.",
+    ),
+    (
+        "Debug Issue",
+        "Systematic debugging of a problem",
+        "Help me debug the current issue. Start by understanding the symptoms, then systematically trace through the code to identify the root cause. Suggest a fix with explanation.",
+    ),
+    (
+        "Refactor",
+        "Improve code structure and readability",
+        "Analyze the code I've been working on and suggest refactoring improvements. Focus on reducing complexity, improving naming, extracting functions, and following project conventions. Show before/after.",
+    ),
+    (
+        "Security Audit",
+        "Check for security vulnerabilities",
+        "Perform a security audit of the recent changes. Check for OWASP top 10 vulnerabilities, input validation issues, authentication/authorization gaps, and data exposure risks.",
+    ),
+    (
+        "Performance Review",
+        "Analyze code for performance issues",
+        "Review the recent code for performance issues. Look for N+1 queries, unnecessary allocations, blocking operations, missing caching opportunities, and algorithmic complexity problems.",
+    ),
+    (
+        "Documentation",
+        "Generate documentation for recent code",
+        "Generate clear documentation for the code I've been working on. Include function/module docs, usage examples, and any important caveats. Follow the project's existing documentation style.",
+    ),
+    (
+        "Explain Codebase",
+        "Get an overview of the project structure",
+        "Explain the overall architecture of this codebase. Cover the main modules, how they interact, key design patterns used, and the data flow. Include file paths for each major component.",
+    ),
+    (
+        "Git Summary",
+        "Summarize recent git changes",
+        "Look at the recent git history and summarize what's changed. Group changes by feature/topic, note any breaking changes, and highlight anything that might need attention.",
+    ),
+    (
+        "Dependency Check",
+        "Audit project dependencies",
+        "Review the project's dependencies. Check for outdated packages, known vulnerabilities, unused dependencies, and suggest any that could be replaced or removed.",
+    ),
+];
+
 /// All known vanilla Claude Code slash commands with descriptions.
 /// Used as fallback when system.init doesn't include all commands.
 const KNOWN_SLASH_COMMANDS: &[(&str, &str)] = &[
@@ -161,6 +215,7 @@ enum AppMode {
         cursor: usize,
         scroll: usize,
     },
+    WorkflowPicker(OverlayState),
 }
 
 /// A single item in the slash command completion popup.
@@ -603,7 +658,8 @@ impl App {
             AppMode::ActionMenu(_)
             | AppMode::ThemePicker(_)
             | AppMode::SessionPicker(_)
-            | AppMode::CheckpointTimeline(_) => self.handle_key_overlay(key).await,
+            | AppMode::CheckpointTimeline(_)
+            | AppMode::WorkflowPicker(_) => self.handle_key_overlay(key).await,
             AppMode::TextViewer { .. } => self.handle_key_text_viewer(key),
             AppMode::HistorySearch { .. } => self.handle_key_history_search(key),
             AppMode::TextInput { .. } => self.handle_key_text_input(key).await,
@@ -648,6 +704,11 @@ impl App {
 
         if ctrl && key.code == KeyCode::Char('f') {
             self.open_file_context_panel();
+            return Ok(());
+        }
+
+        if ctrl && key.code == KeyCode::Char('w') {
+            self.open_workflow_picker();
             return Ok(());
         }
 
@@ -890,7 +951,8 @@ impl App {
             AppMode::ActionMenu(ref mut state)
             | AppMode::ThemePicker(ref mut state)
             | AppMode::SessionPicker(ref mut state)
-            | AppMode::CheckpointTimeline(ref mut state) => f(state),
+            | AppMode::CheckpointTimeline(ref mut state)
+            | AppMode::WorkflowPicker(ref mut state) => f(state),
             AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } | AppMode::PluginBrowser { .. } => {}
         }
     }
@@ -1107,6 +1169,11 @@ impl App {
             });
         }
 
+        items.push(OverlayItem {
+            label: "Workflow Templates".to_string(),
+            value: "workflows".to_string(),
+            hint: "Ctrl+W".to_string(),
+        });
         items.push(OverlayItem {
             label: "Switch Theme".to_string(),
             value: "theme".to_string(),
@@ -1423,6 +1490,7 @@ impl App {
                             self.toast = Some(Toast::new("Compacting context...".to_string()));
                         }
                         "rewind" => self.open_checkpoint_timeline(),
+                        "workflows" => self.open_workflow_picker(),
                         "theme" => self.open_theme_picker(),
                         "quit" => self.should_quit = true,
                         _ => {}
@@ -1443,6 +1511,17 @@ impl App {
                         claude.send_message(&cmd).await?;
                     }
                     self.toast = Some(Toast::new(format!("Rewinding to turn {}...", value)));
+                }
+            }
+            AppMode::WorkflowPicker(state) => {
+                if let Some(value) = state.selected_value() {
+                    // value is the workflow prompt text
+                    self.conversation.push_user_message(value.clone());
+                    self.auto_scroll = true;
+                    self.scroll_to_bottom();
+                    if let Some(ref mut claude) = self.claude {
+                        claude.send_message(&value).await?;
+                    }
                 }
             }
             AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } | AppMode::PluginBrowser { .. } => {}
@@ -1484,6 +1563,7 @@ impl App {
         lines.push("   Ctrl+I              CLAUDE.md viewer".to_string());
         lines.push("   Ctrl+M              Auto-memory viewer".to_string());
         lines.push("   Ctrl+P              Plugin browser".to_string());
+        lines.push("   Ctrl+W              Workflow templates".to_string());
         lines.push("   Ctrl+F              File context panel".to_string());
         lines.push("   Ctrl+D              Diff viewer".to_string());
         lines.push("   Ctrl+E              Toggle tool blocks".to_string());
@@ -1675,6 +1755,18 @@ impl App {
         });
 
         plugins
+    }
+
+    fn open_workflow_picker(&mut self) {
+        let items: Vec<OverlayItem> = WORKFLOW_TEMPLATES
+            .iter()
+            .map(|(name, desc, prompt)| OverlayItem {
+                label: name.to_string(),
+                value: prompt.to_string(),
+                hint: desc.to_string(),
+            })
+            .collect();
+        self.mode = AppMode::WorkflowPicker(OverlayState::new(items, None));
     }
 
     fn open_plugin_browser(&mut self) {
@@ -2024,6 +2116,7 @@ impl App {
             AppMode::ThemePicker(state) => Some(("Select Theme", state)),
             AppMode::SessionPicker(state) => Some(("Resume Session", state)),
             AppMode::CheckpointTimeline(state) => Some(("Rewind to Checkpoint", state)),
+            AppMode::WorkflowPicker(state) => Some(("Workflow Templates", state)),
             AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } | AppMode::PluginBrowser { .. } => None,
         };
 
