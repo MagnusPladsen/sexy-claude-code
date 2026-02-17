@@ -71,6 +71,7 @@ enum LocalAction {
     Help,
     ShowConfig,
     ShowModel,
+    ShowMemory,
     Exit,
     ChangeTheme,
 }
@@ -605,6 +606,11 @@ impl App {
             return Ok(());
         }
 
+        if ctrl && key.code == KeyCode::Char('m') {
+            self.open_memory_viewer();
+            return Ok(());
+        }
+
         if ctrl && key.code == KeyCode::Char('f') {
             self.open_file_context_panel();
             return Ok(());
@@ -735,6 +741,9 @@ impl App {
                                     .or(self.config.model.as_deref())
                                     .unwrap_or("(default)");
                                 self.toast = Some(Toast::new(format!("Model: {model}")));
+                            }
+                            LocalAction::ShowMemory => {
+                                self.open_memory_viewer();
                             }
                             LocalAction::Exit => {
                                 self.should_quit = true;
@@ -967,6 +976,7 @@ impl App {
             "/help" => Some(LocalAction::Help),
             "/config" => Some(LocalAction::ShowConfig),
             "/model" => Some(LocalAction::ShowModel),
+            "/memory" => Some(LocalAction::ShowMemory),
             "/exit" | "/quit" => Some(LocalAction::Exit),
             "/theme" => Some(LocalAction::ChangeTheme),
             _ => None,
@@ -1428,6 +1438,7 @@ impl App {
         lines.push("   Ctrl+T              Theme picker".to_string());
         lines.push("   Ctrl+R              History search".to_string());
         lines.push("   Ctrl+I              CLAUDE.md viewer".to_string());
+        lines.push("   Ctrl+M              Auto-memory viewer".to_string());
         lines.push("   Ctrl+F              File context panel".to_string());
         lines.push("   Ctrl+D              Diff viewer".to_string());
         lines.push("   Ctrl+E              Toggle tool blocks".to_string());
@@ -1483,6 +1494,58 @@ impl App {
         let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
         self.mode = AppMode::TextViewer {
             title: "CLAUDE.md".to_string(),
+            lines,
+            scroll: 0,
+        };
+    }
+
+    fn open_memory_viewer(&mut self) {
+        // Derive project memory directory from cwd
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let project_key = cwd.to_string_lossy().replace('/', "-");
+        let memory_dir = dirs::home_dir()
+            .map(|h| h.join(".claude/projects").join(&project_key).join("memory"));
+
+        let mut combined = String::new();
+        let mut file_count = 0;
+
+        if let Some(ref dir) = memory_dir {
+            if dir.is_dir() {
+                // Read all .md files, MEMORY.md first
+                let mut files: Vec<_> = std::fs::read_dir(dir)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+                    .collect();
+                files.sort_by(|a, b| {
+                    let a_is_memory = a.file_name() == "MEMORY.md";
+                    let b_is_memory = b.file_name() == "MEMORY.md";
+                    b_is_memory.cmp(&a_is_memory).then(a.file_name().cmp(&b.file_name()))
+                });
+
+                for entry in files {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                        if file_count > 0 {
+                            combined.push('\n');
+                        }
+                        combined.push_str(&format!("═══ {} ═══\n\n", name));
+                        combined.push_str(&content);
+                        file_count += 1;
+                    }
+                }
+            }
+        }
+
+        if file_count == 0 {
+            self.toast = Some(Toast::new("No memory files found".to_string()));
+            return;
+        }
+
+        let lines: Vec<String> = combined.lines().map(|l| l.to_string()).collect();
+        self.mode = AppMode::TextViewer {
+            title: format!("Auto-Memory ({file_count} files)"),
             lines,
             scroll: 0,
         };
