@@ -1,6 +1,16 @@
 # sexy-claude (sc)
 
+[![GitHub release](https://img.shields.io/github/v/release/MagnusPladsen/sexy-claude-code?include_prereleases&style=flat-square)](https://github.com/MagnusPladsen/sexy-claude-code/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.80%2B-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
+[![GitHub stars](https://img.shields.io/github/stars/MagnusPladsen/sexy-claude-code?style=flat-square)](https://github.com/MagnusPladsen/sexy-claude-code/stargazers)
+[![GitHub issues](https://img.shields.io/github/issues/MagnusPladsen/sexy-claude-code?style=flat-square)](https://github.com/MagnusPladsen/sexy-claude-code/issues)
+
 A beautiful terminal wrapper for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) built with Rust. It re-renders Claude Code's output inside a themed TUI shell with configurable colors, styled borders, and a clean status bar — without modifying Claude Code's behavior.
+
+<p align="center">
+  <img src="assets/screenshot.png" alt="sexy-claude screenshot" width="800">
+</p>
 
 ## Features
 
