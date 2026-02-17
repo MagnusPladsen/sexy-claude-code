@@ -18,6 +18,8 @@ pub struct StatusBar<'a> {
     todo_summary: Option<&'a str>,
     model_name: Option<&'a str>,
     permission_mode: Option<&'a str>,
+    /// Active tool name and elapsed seconds, if a tool is currently running.
+    active_tool: Option<(&'a str, u64)>,
 }
 
 impl<'a> StatusBar<'a> {
@@ -29,6 +31,7 @@ impl<'a> StatusBar<'a> {
         todo_summary: Option<&'a str>,
         model_name: Option<&'a str>,
         permission_mode: Option<&'a str>,
+        active_tool: Option<(&'a str, u64)>,
     ) -> Self {
         Self {
             theme,
@@ -38,6 +41,7 @@ impl<'a> StatusBar<'a> {
             todo_summary,
             model_name,
             permission_mode,
+            active_tool,
         }
     }
 }
@@ -139,7 +143,18 @@ impl<'a> Widget for StatusBar<'a> {
             let todo_style = Style::default()
                 .fg(self.theme.info)
                 .bg(self.theme.status_bg);
-            write_str(buf, summary, left_end, area.y, area.right(), todo_style);
+            left_end = write_str(buf, summary, left_end, area.y, area.right(), todo_style);
+        }
+
+        // Active tool indicator (after todo summary)
+        if let Some((tool_name, elapsed)) = self.active_tool {
+            let sep = " | ";
+            left_end = write_str(buf, sep, left_end, area.y, area.right(), style);
+            let tool_text = format!("\u{26A1} {} ({elapsed}s)", tool_name);
+            let tool_style = Style::default()
+                .fg(self.theme.warning)
+                .bg(self.theme.status_bg);
+            write_str(buf, &tool_text, left_end, area.y, area.right(), tool_style);
         }
 
         // Center: model | tokens | cost | context bar
