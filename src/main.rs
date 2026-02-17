@@ -37,8 +37,8 @@ struct Cli {
     effort: Option<String>,
 
     /// Maximum budget in USD per session (overrides config)
-    #[arg(long)]
-    max_budget: Option<f64>,
+    #[arg(long = "max-budget-usd", alias = "max-budget")]
+    max_budget_usd: Option<f64>,
 
     /// Path to MCP server config file (overrides config)
     #[arg(long)]
@@ -59,6 +59,10 @@ struct Cli {
     /// Continue the most recent session
     #[arg(long = "continue")]
     continue_session: bool,
+
+    /// Resume a specific session by ID
+    #[arg(long)]
+    resume: Option<String>,
 
     /// Command to run (default: claude)
     #[arg(trailing_var_arg = true)]
@@ -120,15 +124,17 @@ async fn main() -> Result<()> {
 
     // Run the app — no more PTY setup needed, App handles process spawning
     let theme_name_owned = theme_name.to_string();
+    let continue_session = cli.continue_session || cli.resume.is_some();
     let mut app = app::App::new(
         config,
         theme,
         theme_name_owned,
         command,
-        cli.continue_session,
+        continue_session,
         cli.model,
         cli.effort,
-        cli.max_budget,
+        cli.max_budget_usd,
+        cli.resume,
     );
     let result = app.run(&mut terminal).await;
 

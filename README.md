@@ -6,18 +6,24 @@
 [![GitHub stars](https://img.shields.io/github/stars/MagnusPladsen/sexy-claude-code?style=flat-square)](https://github.com/MagnusPladsen/sexy-claude-code/stargazers)
 [![GitHub issues](https://img.shields.io/github/issues/MagnusPladsen/sexy-claude-code?style=flat-square)](https://github.com/MagnusPladsen/sexy-claude-code/issues)
 
-A beautiful terminal wrapper for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) built with Rust. It re-renders Claude Code's output inside a themed TUI shell with configurable colors, styled borders, and a clean status bar — without modifying Claude Code's behavior.
+A beautiful terminal wrapper for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) built with Rust. All vanilla Claude Code features work out of the box — slash commands, permissions, hooks, MCP, skills — while adding themes, split panes, cost tracking, and more.
 
 <img width="1703" height="1377" alt="image" src="https://github.com/user-attachments/assets/9761c22a-0862-44c1-bca4-ae2f4072fe98" />
 
 ## Features
 
-- **Themed rendering** — Catppuccin Mocha by default, with support for custom TOML themes
-- **Background override** — Replaces Claude Code's default dark backgrounds with your theme colors for a seamless look
-- **Styled chrome** — Rounded borders, branded header, and a status bar
-- **Full pass-through** — All keystrokes go directly to Claude Code; it handles its own input, prompts, and interactivity
-- **PTY isolation** — Claude Code runs in a pseudo-terminal subprocess, no shared memory or raw ANSI passthrough
-- **Fast** — Built on [Ratatui](https://ratatui.rs) + [Crossterm](https://github.com/crossterm-rs/crossterm), renders at 30fps with differential updates
+- **Themed rendering** — 10+ bundled themes (Catppuccin, Nord, Dracula, Gruvbox, etc.) with custom theme support
+- **Cost tracking** — Real-time session cost in the status bar with per-model pricing
+- **Split pane mode** — Side-by-side conversation + file/diff preview (Ctrl+S)
+- **Agent dashboard** — Monitor sub-agents spawned via the Task tool (Ctrl+A)
+- **Plugin browser** — Browse, install, enable/disable Claude plugins (Ctrl+P)
+- **Workflow templates** — Quick-launch common prompts: code review, tests, debug, etc. (Ctrl+W)
+- **Session management** — Resume previous sessions, rename, checkpoint/rewind
+- **Input history** — Persistent history with Ctrl+R fuzzy search
+- **Diff viewer** — Word-level diff highlighting for file edits (Ctrl+D)
+- **File context panel** — See all files accessed in the session (Ctrl+F)
+- **Collapsible tool blocks** — Expand/collapse tool output (Ctrl+E)
+- **Full vanilla passthrough** — All Claude Code slash commands, permissions, hooks, and MCP work natively
 
 ## Install
 
@@ -39,26 +45,70 @@ cargo build --release
 ## Usage
 
 ```bash
-# Launch with defaults (wraps `claude`)
+# Launch with defaults
 sc
 
-# Specify a theme
-sc --theme catppuccin-mocha
+# Continue most recent session
+sc --continue
 
-# Wrap a different command
-sc bash
-sc -- claude --model sonnet
+# Resume a specific session
+sc --resume <session-id>
+
+# Set model and permission mode
+sc --model claude-sonnet-4-5-20250929 --permission-mode plan
+
+# Bypass all permission checks
+sc --dangerously-skip-permissions
+
+# Specify a theme
+sc --theme nord
+
+# Set budget limit
+sc --max-budget-usd 5.00
 
 # Show help
 sc --help
 ```
 
-### Key bindings
+### CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `--theme <name>` | Theme name (e.g., catppuccin-mocha, nord, dracula) |
+| `--model <model>` | Claude model to use |
+| `--effort <level>` | Effort level: low, medium, high |
+| `--max-budget-usd <amount>` | Maximum spend per session in USD |
+| `--permission-mode <mode>` | Permission mode: default, plan, acceptEdits, bypassPermissions, delegate, dontAsk |
+| `--dangerously-skip-permissions` | Bypass all permission checks |
+| `--allowed-tools <tool>` | Auto-allow specific tools (repeatable) |
+| `--mcp-config <path>` | Path to MCP server config file |
+| `--continue` | Continue the most recent session |
+| `--resume <id>` | Resume a specific session by ID |
+| `--config <path>` | Path to config file |
+
+### Key Bindings
 
 | Key | Action |
 |-----|--------|
-| All keys | Passed directly to Claude Code |
-| `Ctrl+Q` | Quit sexy-claude |
+| `Ctrl+K` | Open action menu |
+| `Ctrl+S` | Toggle split pane (conversation + file/diff) |
+| `Ctrl+A` | Agent teams dashboard |
+| `Ctrl+D` | Diff viewer (all session edits) |
+| `Ctrl+F` | File context panel |
+| `Ctrl+E` | Expand/collapse tool output blocks |
+| `Ctrl+R` | Search input history |
+| `Ctrl+T` | Switch theme |
+| `Ctrl+W` | Workflow templates |
+| `Ctrl+P` | Plugin browser |
+| `Ctrl+M` | Auto-memory viewer |
+| `Ctrl+I` | CLAUDE.md instructions viewer |
+| `PageUp/Down` | Scroll conversation |
+| `Shift+PageUp/Down` | Scroll split pane |
+| `Ctrl+Q` | Quit |
+
+### Action Menu (Ctrl+K)
+
+The action menu provides quick access to all features: session management, slash commands (/compact, /model, /config, etc.), workflow templates, theme switching, split pane toggle, agent dashboard, and more.
 
 ## Configuration
 
@@ -68,11 +118,29 @@ Config file: `~/.config/sexy-claude/config.toml`
 # Command to wrap (default: "claude")
 command = "claude"
 
-# Theme name (looks in themes/ dir or ~/.config/sexy-claude/themes/)
+# Theme name
 theme = "catppuccin-mocha"
 
 # Render framerate
 fps = 30
+
+# Claude model
+model = "claude-sonnet-4-5-20250929"
+
+# Effort level
+effort = "high"
+
+# Max budget per session (USD)
+max_budget_usd = 10.0
+
+# Permission mode
+permission_mode = "default"
+
+# Auto-allowed tools
+allowed_tools = ["Bash", "Read"]
+
+# MCP server config path
+mcp_config = "/path/to/mcp.json"
 
 [layout]
 # Claude pane width percentage (20-100)
@@ -81,9 +149,9 @@ claude_pane_percent = 100
 
 ## Themes
 
-Themes are TOML files with semantic color names mapped to hex values. See `themes/catppuccin-mocha.toml` for the full format.
+10+ bundled themes are included. Custom themes go in `~/.config/sexy-claude/themes/`.
 
-Place custom themes in `~/.config/sexy-claude/themes/`.
+Browse community themes at [sexy-claude-themes](https://github.com/MagnusPladsen/sexy-claude-themes).
 
 ```toml
 name = "My Theme"
@@ -101,29 +169,27 @@ status_fg = "#a6adc8"
 
 ## Architecture
 
+sexy-claude spawns Claude Code as a child process using the stream-json protocol (`--output-format stream-json --input-format stream-json`). Events are parsed in real-time and rendered through Ratatui.
+
 ```
-User Input --> PTY stdin --> Claude Code
-                                  |
-Claude Code stdout --> PTY reader --> vt100 Parser
+User Input --> stream-json stdin --> Claude CLI
                                         |
-                             Screen Buffer (cell grid)
+Claude CLI stdout --> Event Parser --> Conversation Model
                                         |
-                            Ratatui Converter (cell->cell)
-                              + theme bg override
-                                        |
-                             Ratatui Buffer --> Terminal
-                                  +
-                        Chrome (borders, status bar)
+                                   Ratatui Renderer
+                                     + Theme
+                                     + Split Pane
+                                     + Status Bar (cost, tokens, git, tools)
+                                     + Overlays (menus, pickers, dashboards)
 ```
 
 ### Key crates
 
 - `ratatui` + `crossterm` — TUI framework and terminal backend
-- `vt100` — Terminal emulator / ANSI parser
-- `portable-pty` — Cross-platform PTY (from the WezTerm project)
 - `tokio` — Async runtime for concurrent event handling
 - `clap` — CLI argument parsing
-- `toml` + `serde` — Configuration and theme parsing
+- `serde` + `serde_json` + `toml` — Configuration and event parsing
+- `fuzzy-matcher` — Fuzzy search for history and completions
 
 ## Requirements
 
