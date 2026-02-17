@@ -5,8 +5,11 @@ use ratatui::widgets::Widget;
 
 use crate::theme::Theme;
 
-/// Height of the header area in terminal rows.
+/// Height of the full header area in terminal rows.
 pub const HEADER_HEIGHT: u16 = 10;
+
+/// Height of the compact header (single line with name + version).
+pub const COMPACT_HEADER_HEIGHT: u16 = 1;
 
 /// ASCII art logo — "SEXY CLAUDE" in Big figlet style (6 rows, ~76 chars wide).
 const LOGO: [&str; 6] = [
@@ -23,14 +26,21 @@ const SPARKLES: [char; 6] = ['✦', '✧', '⋆', '·', '∘', '⊹'];
 
 /// Animated header widget displaying a big sexy-claude brand with
 /// gradient wave, sparkle particles, and shimmer sweep effects.
+/// In compact mode, shows a single-line header with name + version.
 pub struct Header<'a> {
     theme: &'a Theme,
     frame_count: u64,
+    compact: bool,
 }
 
 impl<'a> Header<'a> {
     pub fn new(theme: &'a Theme, frame_count: u64) -> Self {
-        Self { theme, frame_count }
+        Self { theme, frame_count, compact: false }
+    }
+
+    pub fn compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
     }
 }
 
@@ -50,6 +60,27 @@ impl Widget for Header<'_> {
                     cell.set_style(Style::default().bg(bg));
                 }
             }
+        }
+
+        // Compact mode: single line with "sexy-claude vX.Y.Z" centered
+        if self.compact {
+            let text = format!("sexy-claude v{}", env!("CARGO_PKG_VERSION"));
+            let text_len = text.len() as u16;
+            let start_x = area.left() + area.width.saturating_sub(text_len) / 2;
+            let y = area.top();
+            let phase = frame as f64 * 0.02;
+            for (i, ch) in text.chars().enumerate() {
+                let x = start_x + i as u16;
+                if x >= area.right() { break; }
+                let position = (i as f64 / text_len.max(1) as f64) + phase;
+                let color = gradient_color(self.theme, position);
+                let style = Style::default().fg(color).bg(bg).add_modifier(Modifier::BOLD);
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(ch);
+                    cell.set_style(style);
+                }
+            }
+            return;
         }
 
         // --- Row 0: sparkle particle row ---

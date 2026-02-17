@@ -29,6 +29,12 @@ impl InputEditor {
         self.insert_char('\n');
     }
 
+    /// Insert a string at the cursor position (used for paste).
+    pub fn insert_str(&mut self, s: &str) {
+        self.content.insert_str(self.cursor, s);
+        self.cursor += s.len();
+    }
+
     pub fn backspace(&mut self) {
         if self.cursor > 0 {
             // Find the previous character boundary
@@ -142,6 +148,9 @@ impl<'a> Widget for InputWidget<'a> {
         let style = Style::default()
             .fg(self.theme.input_fg)
             .bg(self.theme.input_bg);
+        let cursor_style = Style::default()
+            .fg(self.theme.input_bg)
+            .bg(self.theme.primary);
 
         // Fill background
         for y in area.y..area.bottom() {
@@ -152,12 +161,17 @@ impl<'a> Widget for InputWidget<'a> {
         }
 
         if self.editor.is_empty() {
+            // Show cursor at position 0
+            if let Some(cell) = buf.cell_mut((area.x, area.y)) {
+                cell.set_symbol(" ");
+                cell.set_style(cursor_style);
+            }
             let placeholder_style = Style::default()
                 .fg(self.theme.input_placeholder)
                 .bg(self.theme.input_bg);
             let placeholder = "Type a message... (Enter to send, Shift+Enter for newline)";
             for (i, ch) in placeholder.chars().enumerate() {
-                let x = area.x + i as u16;
+                let x = area.x + 1 + i as u16;
                 if x >= area.right() {
                     break;
                 }
@@ -167,16 +181,29 @@ impl<'a> Widget for InputWidget<'a> {
             return;
         }
 
-        // Render content
+        // Render content with cursor
+        let cursor_pos = self.editor.cursor_position();
         let mut x = area.x;
         let mut y = area.y;
+        let mut byte_offset = 0usize;
+
         for ch in self.editor.content().chars() {
             if y >= area.bottom() {
                 break;
             }
+            let is_cursor = byte_offset == cursor_pos;
+
             if ch == '\n' {
+                // Show cursor on the newline position (as a block at end of line)
+                if is_cursor && x < area.right() && y < area.bottom() {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.set_symbol(" ");
+                        cell.set_style(cursor_style);
+                    }
+                }
                 x = area.x;
                 y += 1;
+                byte_offset += ch.len_utf8();
                 continue;
             }
             if x >= area.right() {
@@ -186,9 +213,25 @@ impl<'a> Widget for InputWidget<'a> {
                     break;
                 }
             }
+            let char_style = if is_cursor { cursor_style } else { style };
             buf[(x, y)].set_symbol(&ch.to_string());
-            buf[(x, y)].set_style(style);
+            buf[(x, y)].set_style(char_style);
             x += 1;
+            byte_offset += ch.len_utf8();
+        }
+
+        // If cursor is at end of content, show cursor block after last char
+        if cursor_pos == self.editor.content().len() {
+            if x >= area.right() {
+                x = area.x;
+                y += 1;
+            }
+            if y < area.bottom() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_symbol(" ");
+                    cell.set_style(cursor_style);
+                }
+            }
         }
     }
 }
