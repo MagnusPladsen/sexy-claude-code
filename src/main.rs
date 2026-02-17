@@ -44,9 +44,13 @@ struct Cli {
     #[arg(long)]
     mcp_config: Option<String>,
 
-    /// Permission mode: default, plan, bypassPermissions (overrides config)
+    /// Permission mode: default, plan, acceptEdits, bypassPermissions, delegate, dontAsk
     #[arg(long)]
     permission_mode: Option<String>,
+
+    /// Bypass all permission checks (alias for --permission-mode bypassPermissions)
+    #[arg(long)]
+    dangerously_skip_permissions: bool,
 
     /// Tools to auto-allow (can be repeated, e.g. --allowed-tools Bash --allowed-tools Read)
     #[arg(long = "allowed-tools")]
@@ -72,7 +76,9 @@ async fn main() -> Result<()> {
     if cli.mcp_config.is_some() {
         config.mcp_config = cli.mcp_config;
     }
-    if cli.permission_mode.is_some() {
+    if cli.dangerously_skip_permissions {
+        config.permission_mode = Some("bypassPermissions".to_string());
+    } else if cli.permission_mode.is_some() {
         config.permission_mode = cli.permission_mode;
     }
     if cli.allowed_tools.is_some() {
