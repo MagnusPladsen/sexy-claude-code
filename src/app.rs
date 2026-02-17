@@ -322,6 +322,8 @@ pub struct App {
     effort_override: Option<String>,
     /// Budget override from CLI args.
     budget_override: Option<f64>,
+    /// Resume a specific session by ID from CLI args.
+    resume_session_id: Option<String>,
     /// Current git repo info (branch, dirty count).
     git_info: GitInfo,
     /// Frame counter at last git refresh (refresh every ~5s).
@@ -359,6 +361,7 @@ impl App {
         model_override: Option<String>,
         effort_override: Option<String>,
         budget_override: Option<f64>,
+        resume_session_id: Option<String>,
     ) -> Self {
         Self {
             config,
@@ -386,6 +389,7 @@ impl App {
             model_override,
             effort_override,
             budget_override,
+            resume_session_id,
             git_info: GitInfo::gather(),
             git_last_refresh: 0,
             todo_tracker: TodoTracker::new(),
@@ -417,6 +421,7 @@ impl App {
             mcp_config: self.config.mcp_config.clone(),
             permission_mode: self.config.permission_mode.clone(),
             allowed_tools: self.config.allowed_tools.clone(),
+            resume_session_id: self.resume_session_id.clone(),
             ..Default::default()
         }
     }
