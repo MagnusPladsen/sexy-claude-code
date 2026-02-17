@@ -176,6 +176,17 @@ impl PluginInfo {
     }
 }
 
+/// Content shown in the right split pane.
+#[derive(Clone)]
+pub enum SplitContent {
+    /// Default: list of files touched in the session.
+    FileContext(Vec<String>),
+    /// File content preview (filename, lines).
+    FilePreview(String, Vec<String>),
+    /// Unified diff view.
+    DiffView(Vec<String>),
+}
+
 /// What to do when a TextInput overlay is confirmed.
 enum TextInputAction {
     RenameSession,
@@ -311,6 +322,12 @@ pub struct App {
     /// Tracks AskUserQuestion tool_use blocks pending user interaction.
     /// Maps tool_use_id → accumulated input JSON string.
     pending_user_questions: std::collections::HashMap<String, String>,
+    /// Whether split pane mode is active (Ctrl+S).
+    split_pane: bool,
+    /// Content displayed in the right split pane.
+    split_content: SplitContent,
+    /// Scroll offset for the right split pane.
+    split_scroll: usize,
 }
 
 impl App {
@@ -358,6 +375,9 @@ impl App {
             history_browse_index: None,
             tools_expanded: false,
             pending_user_questions: std::collections::HashMap::new(),
+            split_pane: false,
+            split_content: SplitContent::FileContext(Vec::new()),
+            split_scroll: 0,
         }
     }
 
@@ -609,6 +629,11 @@ impl App {
                     }
                 }
 
+                // Auto-update split pane content based on tool results
+                if self.split_pane {
+                    self.update_split_content_from_event(&event);
+                }
+
                 self.conversation.apply_event(&event);
                 if self.auto_scroll {
                     self.scroll_to_bottom();
@@ -729,7 +754,27 @@ impl App {
             return Ok(());
         }
 
-        // Scrolling
+        if ctrl && key.code == KeyCode::Char('s') {
+            self.split_pane = !self.split_pane;
+            let msg = if self.split_pane { "Split pane enabled" } else { "Split pane closed" };
+            self.toast = Some(Toast::new(msg.to_string()));
+            return Ok(());
+        }
+
+        // Scrolling — Shift+PageUp/Down scrolls split pane, plain PageUp/Down scrolls conversation
+        if self.split_pane && shift {
+            match key.code {
+                KeyCode::PageUp => {
+                    self.split_scroll = self.split_scroll.saturating_sub(10);
+                    return Ok(());
+                }
+                KeyCode::PageDown => {
+                    self.split_scroll += 10;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
         match key.code {
             KeyCode::PageUp => {
                 self.auto_scroll = false;
@@ -1175,6 +1220,11 @@ impl App {
             hint: "Ctrl+W".to_string(),
         });
         items.push(OverlayItem {
+            label: if self.split_pane { "Close Split Pane".to_string() } else { "Split Pane".to_string() },
+            value: "split".to_string(),
+            hint: "Ctrl+S".to_string(),
+        });
+        items.push(OverlayItem {
             label: "Switch Theme".to_string(),
             value: "theme".to_string(),
             hint: "Ctrl+T".to_string(),
@@ -1491,6 +1541,11 @@ impl App {
                         }
                         "rewind" => self.open_checkpoint_timeline(),
                         "workflows" => self.open_workflow_picker(),
+                        "split" => {
+                            self.split_pane = !self.split_pane;
+                            let msg = if self.split_pane { "Split pane enabled" } else { "Split pane closed" };
+                            self.toast = Some(Toast::new(msg.to_string()));
+                        }
                         "theme" => self.open_theme_picker(),
                         "quit" => self.should_quit = true,
                         _ => {}
@@ -1564,6 +1619,7 @@ impl App {
         lines.push("   Ctrl+M              Auto-memory viewer".to_string());
         lines.push("   Ctrl+P              Plugin browser".to_string());
         lines.push("   Ctrl+W              Workflow templates".to_string());
+        lines.push("   Ctrl+S              Toggle split pane".to_string());
         lines.push("   Ctrl+F              File context panel".to_string());
         lines.push("   Ctrl+D              Diff viewer".to_string());
         lines.push("   Ctrl+E              Toggle tool blocks".to_string());
@@ -1978,6 +2034,93 @@ impl App {
         };
     }
 
+    /// Update split pane content based on incoming stream events.
+    /// Reacts to tool executions: Edit → DiffView, Read/Write → FilePreview.
+    fn update_split_content_from_event(&mut self, event: &StreamEvent) {
+        use crate::claude::conversation::ContentBlock;
+
+        // When a tool is about to execute (MessageStop with ToolUse), update the split pane
+        if let StreamEvent::MessageStop = event {
+            if let Some(msg) = self.conversation.messages.last() {
+                if let Some(ContentBlock::ToolUse { name, input, .. }) = msg.content.last() {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(input) {
+                        match name.as_str() {
+                            "Edit" => {
+                                let file_path = value
+                                    .get("file_path")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+                                let old = value
+                                    .get("old_string")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                let new = value
+                                    .get("new_string")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                let mut lines = vec![format!("--- {file_path}"), format!("+++ {file_path}")];
+                                let ops = crate::diff::diff_lines(old, new);
+                                for line in crate::diff::format_unified(&ops).lines() {
+                                    lines.push(line.to_string());
+                                }
+                                self.split_content = SplitContent::DiffView(lines);
+                                self.split_scroll = 0;
+                            }
+                            "Read" => {
+                                let file_path = value
+                                    .get("file_path")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown")
+                                    .to_string();
+                                // Content will appear in tool result; show placeholder
+                                self.split_content = SplitContent::FilePreview(
+                                    file_path,
+                                    vec!["Reading file...".to_string()],
+                                );
+                                self.split_scroll = 0;
+                            }
+                            "Write" => {
+                                let file_path = value
+                                    .get("file_path")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown")
+                                    .to_string();
+                                let content = value
+                                    .get("content")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+                                self.split_content = SplitContent::FilePreview(file_path, lines);
+                                self.split_scroll = 0;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+
+        // When a ToolResult arrives for a Read, populate with the actual content
+        if let StreamEvent::ToolResult { ref tool_use_id, ref content, .. } = event {
+            // Find the matching ToolUse to check if it was a Read
+            for msg in self.conversation.messages.iter().rev() {
+                for block in msg.content.iter().rev() {
+                    if let ContentBlock::ToolUse { id, name, .. } = block {
+                        if id == tool_use_id && name == "Read" {
+                            if let SplitContent::FilePreview(ref path, _) = self.split_content {
+                                let path = path.clone();
+                                let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+                                self.split_content = SplitContent::FilePreview(path, lines);
+                                self.split_scroll = 0;
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn open_file_context_panel(&mut self) {
         use crate::claude::conversation::ContentBlock;
         use std::collections::BTreeMap;
@@ -2180,6 +2323,8 @@ impl App {
             }
             _ => None,
         };
+        let split_content = if self.split_pane { Some(&self.split_content) } else { None };
+        let split_scroll = self.split_scroll;
 
         terminal.draw(|frame| {
             let active_tool = conversation.active_tool_name()
@@ -2201,6 +2346,8 @@ impl App {
                 permission_mode,
                 tools_expanded,
                 active_tool,
+                split_content,
+                split_scroll,
             );
             if let Some((title, state)) = overlay {
                 ui::render_overlay(frame, title, state, theme);
