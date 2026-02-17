@@ -22,6 +22,40 @@ use crate::ui::input::InputEditor;
 use crate::ui::overlay::{OverlayItem, OverlayState};
 use crate::ui::toast::Toast;
 
+/// All known vanilla Claude Code slash commands with descriptions.
+/// Used as fallback when system.init doesn't include all commands.
+const KNOWN_SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("bug", "Report a bug to the Anthropic team"),
+    ("clear", "Clear conversation history"),
+    ("compact", "Compress conversation context"),
+    ("config", "Open settings"),
+    ("context", "Show context usage"),
+    ("copy", "Copy last response to clipboard"),
+    ("cost", "Show token usage and costs"),
+    ("doctor", "Check installation health"),
+    ("exit", "Exit Claude Code"),
+    ("export", "Export conversation to file"),
+    ("help", "Show available commands"),
+    ("init", "Initialize project CLAUDE.md"),
+    ("keybindings", "Configure keybindings"),
+    ("mcp", "Manage MCP servers"),
+    ("memory", "Edit CLAUDE.md memory files"),
+    ("model", "Switch AI model"),
+    ("permissions", "Show or update tool permissions"),
+    ("plan", "Enter plan mode"),
+    ("rename", "Rename current session"),
+    ("resume", "Resume a previous session"),
+    ("rewind", "Rewind to earlier state"),
+    ("stats", "Show usage statistics"),
+    ("status", "Show version and account info"),
+    ("tasks", "Show background tasks"),
+    ("terminal-setup", "Install Shift+Enter keybinding"),
+    ("theme", "Change color theme"),
+    ("todos", "List current TODOs"),
+    ("usage", "Show plan usage and rate limits"),
+    ("vim", "Toggle vim mode"),
+];
+
 enum Msg {
     ClaudeEvent(StreamEvent),
     ClaudeExited,
@@ -34,6 +68,11 @@ enum Msg {
 /// Actions for commands handled locally (not sent to Claude).
 enum LocalAction {
     Clear,
+    Help,
+    ShowConfig,
+    ShowModel,
+    Exit,
+    ChangeTheme,
 }
 
 /// A parsed question from AskUserQuestion tool input.
@@ -683,6 +722,25 @@ impl App {
                                 self.scroll_offset = 0;
                                 self.auto_scroll = true;
                             }
+                            LocalAction::Help => {
+                                self.show_help_viewer();
+                            }
+                            LocalAction::ShowConfig => {
+                                self.show_config_viewer();
+                            }
+                            LocalAction::ShowModel => {
+                                let model = self.detected_model.as_deref()
+                                    .or(self.model_override.as_deref())
+                                    .or(self.config.model.as_deref())
+                                    .unwrap_or("(default)");
+                                self.toast = Some(Toast::new(format!("Model: {model}")));
+                            }
+                            LocalAction::Exit => {
+                                self.should_quit = true;
+                            }
+                            LocalAction::ChangeTheme => {
+                                self.open_theme_picker();
+                            }
                         }
                     } else if let Some(prompt) = self.resolve_custom_command(&text) {
                         // Custom command — substitute args and send as user message
@@ -786,18 +844,38 @@ impl App {
 
     /// Build a unified list of completion items from slash commands and custom commands.
     fn all_completion_items(&self) -> Vec<CompletionItem> {
+        // Start with commands reported by system.init (authoritative, highest priority)
         let mut items: Vec<CompletionItem> = self
             .slash_commands
             .iter()
-            .map(|cmd| CompletionItem {
-                name: cmd.clone(),
-                description: String::new(),
-                score: 0,
+            .map(|cmd| {
+                // Look up description from known commands
+                let desc = KNOWN_SLASH_COMMANDS
+                    .iter()
+                    .find(|(name, _)| *name == cmd.as_str())
+                    .map(|(_, d)| d.to_string())
+                    .unwrap_or_default();
+                CompletionItem {
+                    name: cmd.clone(),
+                    description: desc,
+                    score: 0,
+                }
             })
             .collect();
 
+        // Add known vanilla commands not already in the list (as fallback)
+        for &(name, description) in KNOWN_SLASH_COMMANDS {
+            if !items.iter().any(|i| i.name == name) {
+                items.push(CompletionItem {
+                    name: name.to_string(),
+                    description: description.to_string(),
+                    score: 0,
+                });
+            }
+        }
+
+        // Add custom commands from .md files (project/user level)
         for cmd in &self.custom_commands {
-            // Skip if a built-in slash command already has this name
             if items.iter().any(|i| i.name == cmd.name) {
                 continue;
             }
@@ -885,6 +963,11 @@ impl App {
         let trimmed = text.trim();
         match trimmed {
             "/clear" => Some(LocalAction::Clear),
+            "/help" => Some(LocalAction::Help),
+            "/config" => Some(LocalAction::ShowConfig),
+            "/model" => Some(LocalAction::ShowModel),
+            "/exit" | "/quit" => Some(LocalAction::Exit),
+            "/theme" => Some(LocalAction::ChangeTheme),
             _ => None,
         }
     }
@@ -1310,6 +1393,69 @@ impl App {
             AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } => {}
         }
         Ok(())
+    }
+
+    fn show_help_viewer(&mut self) {
+        let mut lines = vec![
+            "# Available Commands".to_string(),
+            String::new(),
+            "## Slash Commands".to_string(),
+        ];
+        // Known commands
+        for &(name, description) in KNOWN_SLASH_COMMANDS {
+            let available = self.slash_commands.iter().any(|c| c == name);
+            let marker = if available { " " } else { "?" };
+            lines.push(format!(" {marker} /{name:20} {description}"));
+        }
+        // Custom commands
+        if !self.custom_commands.is_empty() {
+            lines.push(String::new());
+            lines.push("## Custom Commands".to_string());
+            for cmd in &self.custom_commands {
+                let desc = if cmd.description.is_empty() {
+                    "(no description)".to_string()
+                } else {
+                    cmd.description.clone()
+                };
+                lines.push(format!("   /{:20} {desc}", cmd.name));
+            }
+        }
+        lines.push(String::new());
+        lines.push("## Keyboard Shortcuts".to_string());
+        lines.push("   Ctrl+Q              Quit".to_string());
+        lines.push("   Ctrl+K              Action menu".to_string());
+        lines.push("   Ctrl+T              Theme picker".to_string());
+        lines.push("   Ctrl+R              History search".to_string());
+        lines.push("   Ctrl+I              CLAUDE.md viewer".to_string());
+        lines.push("   Ctrl+F              File context panel".to_string());
+        lines.push("   Ctrl+D              Diff viewer".to_string());
+        lines.push("   Ctrl+E              Toggle tool blocks".to_string());
+        lines.push("   PageUp/PageDown     Scroll conversation".to_string());
+        lines.push("   Shift+Enter         Insert newline".to_string());
+        lines.push(String::new());
+        lines.push("? = may not be available in stream-json mode".to_string());
+
+        self.mode = AppMode::TextViewer {
+            title: "Help".to_string(),
+            lines,
+            scroll: 0,
+        };
+    }
+
+    fn show_config_viewer(&mut self) {
+        let config_path = crate::config::Config::default_path();
+        let content = std::fs::read_to_string(&config_path).unwrap_or_else(|_| {
+            format!(
+                "# Config file not found\n# Create it at: {}\n#\n# Example:\n# command = \"claude\"\n# theme = \"catppuccin-mocha\"\n# fps = 30\n# model = \"claude-sonnet-4-5-20250929\"\n# permission_mode = \"default\"",
+                config_path.display()
+            )
+        });
+        let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+        self.mode = AppMode::TextViewer {
+            title: format!("Config ({})", config_path.display()),
+            lines,
+            scroll: 0,
+        };
     }
 
     fn open_instructions_viewer(&mut self) {
