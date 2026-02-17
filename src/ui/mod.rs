@@ -14,7 +14,7 @@ use ratatui::symbols::border;
 use ratatui::widgets::{Block, Borders, Clear, Widget};
 use ratatui::Frame;
 
-use crate::app::{CompletionState, PluginInfo, SplitContent};
+use crate::app::{AgentTask, CompletionState, PluginInfo, SplitContent};
 use crate::claude::conversation::Conversation;
 use crate::diff::{self, DiffOp};
 use crate::git::GitInfo;
@@ -1007,6 +1007,164 @@ pub fn render_plugin_browser(
 
         // Truncate description to fit
         for ch in plugin.description.chars() {
+            if col >= inner.right() { break; }
+            if let Some(cell) = buf.cell_mut((col, row_y)) {
+                cell.set_char(ch);
+                cell.set_style(desc_style);
+            }
+            col += 1;
+        }
+    }
+}
+
+/// Render the agent teams dashboard overlay.
+pub fn render_agent_dashboard(
+    frame: &mut Frame,
+    tasks: &[AgentTask],
+    scroll: usize,
+    theme: &Theme,
+) {
+    let area = frame.area();
+
+    let width = (area.width * 75 / 100).max(50).min(area.width.saturating_sub(4));
+    let height = (area.height * 70 / 100).max(10).min(area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = Rect::new(x, y, width, height);
+
+    let buf = frame.buffer_mut();
+    Clear.render(popup, buf);
+
+    let active_count = tasks.iter().filter(|t| !t.completed).count();
+    let title = format!(" Agent Dashboard ({} active / {} total) ", active_count, tasks.len());
+    let hint = " j/k:scroll  Esc:close ";
+
+    let block = Block::default()
+        .title(title)
+        .title_style(Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))
+        .title_bottom(hint)
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(theme.border_focused))
+        .style(Style::default().bg(theme.surface).fg(theme.foreground));
+
+    let inner = block.inner(popup);
+    block.render(popup, buf);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    // Header row
+    let header = "  STATUS   TYPE             ELAPSED  DESCRIPTION";
+    let header_style = Style::default().fg(theme.primary).bg(theme.surface).add_modifier(Modifier::BOLD);
+    let mut hx = inner.x;
+    for ch in header.chars() {
+        if hx >= inner.right() { break; }
+        if let Some(cell) = buf.cell_mut((hx, inner.y)) {
+            cell.set_char(ch);
+            cell.set_style(header_style);
+        }
+        hx += 1;
+    }
+
+    // Separator line
+    if inner.height > 1 {
+        let sep_y = inner.y + 1;
+        let sep_style = Style::default().fg(theme.border).bg(theme.surface);
+        for sx in inner.x..inner.right() {
+            if let Some(cell) = buf.cell_mut((sx, sep_y)) {
+                cell.set_char('─');
+                cell.set_style(sep_style);
+            }
+        }
+    }
+
+    let data_start = inner.y + 2;
+    let visible = (inner.height as usize).saturating_sub(2);
+    let clamped_scroll = scroll.min(tasks.len().saturating_sub(visible));
+
+    for (i, task) in tasks.iter().enumerate().skip(clamped_scroll).take(visible) {
+        let row_y = data_start + (i - clamped_scroll) as u16;
+        if row_y >= inner.bottom() { break; }
+
+        let is_highlighted = i == scroll;
+        let row_bg = if is_highlighted { theme.overlay } else { theme.surface };
+
+        // Fill row background
+        for col in inner.x..inner.right() {
+            if let Some(cell) = buf.cell_mut((col, row_y)) {
+                cell.set_char(' ');
+                cell.set_style(Style::default().bg(row_bg));
+            }
+        }
+
+        // Status indicator
+        let (status_icon, status_color) = if task.completed {
+            ("  DONE  ", theme.success)
+        } else {
+            ("  RUNNING", theme.warning)
+        };
+
+        // Elapsed time
+        let elapsed = task.started.elapsed().as_secs();
+        let elapsed_str = if elapsed >= 3600 {
+            format!("{}h{}m", elapsed / 3600, (elapsed % 3600) / 60)
+        } else if elapsed >= 60 {
+            format!("{}m{}s", elapsed / 60, elapsed % 60)
+        } else {
+            format!("{}s", elapsed)
+        };
+
+        // Agent type (padded to 16 chars)
+        let agent_type = format!("{:<16}", if task.agent_type.len() > 16 {
+            &task.agent_type[..16]
+        } else {
+            &task.agent_type
+        });
+
+        let status_style = Style::default().fg(status_color).bg(row_bg);
+        let type_style = Style::default().fg(theme.info).bg(row_bg);
+        let elapsed_style = Style::default().fg(theme.input_placeholder).bg(row_bg);
+        let desc_style = Style::default().fg(theme.foreground).bg(row_bg);
+
+        let mut col = inner.x;
+
+        // Status
+        for ch in status_icon.chars() {
+            if col >= inner.right() { break; }
+            if let Some(cell) = buf.cell_mut((col, row_y)) {
+                cell.set_char(ch);
+                cell.set_style(status_style);
+            }
+            col += 1;
+        }
+        col += 1; // gap
+
+        // Agent type
+        for ch in agent_type.chars() {
+            if col >= inner.right() { break; }
+            if let Some(cell) = buf.cell_mut((col, row_y)) {
+                cell.set_char(ch);
+                cell.set_style(type_style);
+            }
+            col += 1;
+        }
+        col += 1; // gap
+
+        // Elapsed
+        let elapsed_padded = format!("{:>6}  ", elapsed_str);
+        for ch in elapsed_padded.chars() {
+            if col >= inner.right() { break; }
+            if let Some(cell) = buf.cell_mut((col, row_y)) {
+                cell.set_char(ch);
+                cell.set_style(elapsed_style);
+            }
+            col += 1;
+        }
+
+        // Description
+        for ch in task.description.chars() {
             if col >= inner.right() { break; }
             if let Some(cell) = buf.cell_mut((col, row_y)) {
                 cell.set_char(ch);

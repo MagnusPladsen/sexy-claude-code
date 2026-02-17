@@ -187,6 +187,20 @@ pub enum SplitContent {
     DiffView(Vec<String>),
 }
 
+/// Tracks a sub-agent spawned via the Task tool.
+pub struct AgentTask {
+    /// tool_use_id that created this agent.
+    pub id: String,
+    /// Short description from the Task tool input.
+    pub description: String,
+    /// Sub-agent type (e.g. "Bash", "Explore", "Plan").
+    pub agent_type: String,
+    /// When this agent was spawned.
+    pub started: std::time::Instant,
+    /// Whether this agent has completed.
+    pub completed: bool,
+}
+
 /// What to do when a TextInput overlay is confirmed.
 enum TextInputAction {
     RenameSession,
@@ -227,6 +241,9 @@ enum AppMode {
         scroll: usize,
     },
     WorkflowPicker(OverlayState),
+    AgentDashboard {
+        scroll: usize,
+    },
 }
 
 /// A single item in the slash command completion popup.
@@ -328,6 +345,8 @@ pub struct App {
     split_content: SplitContent,
     /// Scroll offset for the right split pane.
     split_scroll: usize,
+    /// Tracks sub-agents spawned via the Task tool. Keyed by tool_use_id.
+    agent_tasks: Vec<AgentTask>,
 }
 
 impl App {
@@ -378,6 +397,7 @@ impl App {
             split_pane: false,
             split_content: SplitContent::FileContext(Vec::new()),
             split_scroll: 0,
+            agent_tasks: Vec::new(),
         }
     }
 
@@ -608,6 +628,37 @@ impl App {
                                 self.pending_user_questions
                                     .insert(id.clone(), input.clone());
                             }
+                            // Track sub-agent spawning via Task tool
+                            if name == "Task" {
+                                if let Ok(value) = serde_json::from_str::<serde_json::Value>(input) {
+                                    let description = value
+                                        .get("description")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("agent task")
+                                        .to_string();
+                                    let agent_type = value
+                                        .get("subagent_type")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("unknown")
+                                        .to_string();
+                                    self.agent_tasks.push(AgentTask {
+                                        id: id.clone(),
+                                        description,
+                                        agent_type,
+                                        started: std::time::Instant::now(),
+                                        completed: false,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Mark agent tasks complete when their ToolResult arrives
+                if let StreamEvent::ToolResult { ref tool_use_id, .. } = event {
+                    for task in &mut self.agent_tasks {
+                        if task.id == *tool_use_id {
+                            task.completed = true;
                         }
                     }
                 }
@@ -690,6 +741,7 @@ impl App {
             AppMode::TextInput { .. } => self.handle_key_text_input(key).await,
             AppMode::UserQuestion { .. } => self.handle_key_user_question(key).await,
             AppMode::PluginBrowser { .. } => self.handle_key_plugin_browser(key).await,
+            AppMode::AgentDashboard { .. } => self.handle_key_agent_dashboard(key),
         }
     }
 
@@ -751,6 +803,11 @@ impl App {
             self.tools_expanded = !self.tools_expanded;
             let msg = if self.tools_expanded { "Tool output expanded" } else { "Tool output collapsed" };
             self.toast = Some(Toast::new(msg.to_string()));
+            return Ok(());
+        }
+
+        if ctrl && key.code == KeyCode::Char('a') {
+            self.open_agent_dashboard();
             return Ok(());
         }
 
@@ -998,7 +1055,7 @@ impl App {
             | AppMode::SessionPicker(ref mut state)
             | AppMode::CheckpointTimeline(ref mut state)
             | AppMode::WorkflowPicker(ref mut state) => f(state),
-            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } | AppMode::PluginBrowser { .. } => {}
+            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } | AppMode::PluginBrowser { .. } | AppMode::AgentDashboard { .. } => {}
         }
     }
 
@@ -1224,6 +1281,20 @@ impl App {
             value: "split".to_string(),
             hint: "Ctrl+S".to_string(),
         });
+        {
+            let active = self.agent_tasks.iter().filter(|t| !t.completed).count();
+            let total = self.agent_tasks.len();
+            let label = if total == 0 {
+                "Agent Dashboard".to_string()
+            } else {
+                format!("Agent Dashboard ({active} active / {total} total)")
+            };
+            items.push(OverlayItem {
+                label,
+                value: "agents".to_string(),
+                hint: "Ctrl+A".to_string(),
+            });
+        }
         items.push(OverlayItem {
             label: "Switch Theme".to_string(),
             value: "theme".to_string(),
@@ -1546,6 +1617,7 @@ impl App {
                             let msg = if self.split_pane { "Split pane enabled" } else { "Split pane closed" };
                             self.toast = Some(Toast::new(msg.to_string()));
                         }
+                        "agents" => self.open_agent_dashboard(),
                         "theme" => self.open_theme_picker(),
                         "quit" => self.should_quit = true,
                         _ => {}
@@ -1579,7 +1651,7 @@ impl App {
                     }
                 }
             }
-            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } | AppMode::PluginBrowser { .. } => {}
+            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } | AppMode::PluginBrowser { .. } | AppMode::AgentDashboard { .. } => {}
         }
         Ok(())
     }
@@ -1620,6 +1692,7 @@ impl App {
         lines.push("   Ctrl+P              Plugin browser".to_string());
         lines.push("   Ctrl+W              Workflow templates".to_string());
         lines.push("   Ctrl+S              Toggle split pane".to_string());
+        lines.push("   Ctrl+A              Agent dashboard".to_string());
         lines.push("   Ctrl+F              File context panel".to_string());
         lines.push("   Ctrl+D              Diff viewer".to_string());
         lines.push("   Ctrl+E              Toggle tool blocks".to_string());
@@ -1823,6 +1896,34 @@ impl App {
             })
             .collect();
         self.mode = AppMode::WorkflowPicker(OverlayState::new(items, None));
+    }
+
+    fn open_agent_dashboard(&mut self) {
+        if self.agent_tasks.is_empty() {
+            self.toast = Some(Toast::new("No agent tasks in this session".to_string()));
+            return;
+        }
+        self.mode = AppMode::AgentDashboard { scroll: 0 };
+    }
+
+    fn handle_key_agent_dashboard(&mut self, key: event::KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let AppMode::AgentDashboard { ref mut scroll } = self.mode {
+                    *scroll = scroll.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let AppMode::AgentDashboard { ref mut scroll } = self.mode {
+                    *scroll = (*scroll + 1).min(self.agent_tasks.len().saturating_sub(1));
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn open_plugin_browser(&mut self) {
@@ -2260,7 +2361,7 @@ impl App {
             AppMode::SessionPicker(state) => Some(("Resume Session", state)),
             AppMode::CheckpointTimeline(state) => Some(("Rewind to Checkpoint", state)),
             AppMode::WorkflowPicker(state) => Some(("Workflow Templates", state)),
-            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } | AppMode::PluginBrowser { .. } => None,
+            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } | AppMode::PluginBrowser { .. } | AppMode::AgentDashboard { .. } => None,
         };
 
         // Clamp scroll before rendering
@@ -2323,6 +2424,10 @@ impl App {
             }
             _ => None,
         };
+        let agent_dashboard = match &self.mode {
+            AppMode::AgentDashboard { scroll } => Some((&self.agent_tasks, *scroll)),
+            _ => None,
+        };
         let split_content = if self.split_pane { Some(&self.split_content) } else { None };
         let split_scroll = self.split_scroll;
 
@@ -2377,6 +2482,9 @@ impl App {
             }
             if let Some((plugins, cursor, scroll)) = plugin_browser {
                 ui::render_plugin_browser(frame, plugins, cursor, scroll, theme);
+            }
+            if let Some((tasks, scroll)) = agent_dashboard {
+                ui::render_agent_dashboard(frame, tasks, scroll, theme);
             }
         })?;
 
