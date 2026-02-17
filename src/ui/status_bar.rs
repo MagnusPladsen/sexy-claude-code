@@ -101,8 +101,12 @@ impl<'a> Widget for StatusBar<'a> {
         if let Some(mode) = self.permission_mode {
             let (label, color) = match mode {
                 "plan" => ("PLAN", self.theme.warning),
+                "acceptEdits" => ("ACCEPT-EDITS", self.theme.warning),
+                "delegate" => ("DELEGATE", self.theme.warning),
+                "dontAsk" => ("DONT-ASK", self.theme.error),
                 "bypassPermissions" => ("BYPASS", self.theme.error),
-                _ => ("DEFAULT", self.theme.success),
+                "default" => ("DEFAULT", self.theme.success),
+                _ => (mode, self.theme.info),
             };
             let sep = " | ";
             left_end = write_str(buf, sep, left_end, area.y, area.right(), style);
