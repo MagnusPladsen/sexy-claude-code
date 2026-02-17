@@ -455,13 +455,14 @@ impl App {
                 }
 
                 // Show toast for hook lifecycle events
-                if let StreamEvent::SystemHook { ref subtype, .. } = event {
+                if let StreamEvent::SystemHook { ref subtype, ref hook_id } = event {
+                    let name = hook_id.as_deref().unwrap_or("hook");
                     match subtype.as_str() {
                         "hook_started" => {
-                            self.toast = Some(Toast::new("Hook running...".to_string()));
+                            self.toast = Some(Toast::new(format!("Running hook: {name}")));
                         }
                         "hook_completed" => {
-                            self.toast = Some(Toast::new("Hook completed".to_string()));
+                            self.toast = Some(Toast::new(format!("Hook completed: {name}")));
                         }
                         _ => {}
                     }
@@ -1746,6 +1747,8 @@ impl App {
         };
 
         terminal.draw(|frame| {
+            let active_tool = conversation.active_tool_name()
+                .map(|name| (name, conversation.tool_elapsed_secs().unwrap_or(0)));
             ui::render(
                 frame,
                 conversation,
@@ -1762,6 +1765,7 @@ impl App {
                 model_name,
                 permission_mode,
                 tools_expanded,
+                active_tool,
             );
             if let Some((title, state)) = overlay {
                 ui::render_overlay(frame, title, state, theme);

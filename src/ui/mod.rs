@@ -45,6 +45,7 @@ pub fn render(
     model_name: Option<&str>,
     permission_mode: Option<&str>,
     tools_expanded: bool,
+    active_tool: Option<(&str, u64)>,
 ) {
     let size = frame.area();
 
@@ -98,7 +99,7 @@ pub fn render(
 
     // Status bar
     frame.render_widget(
-        StatusBar::new(theme, token_usage.0, token_usage.1, git_info, todo_summary, model_name, permission_mode),
+        StatusBar::new(theme, token_usage.0, token_usage.1, git_info, todo_summary, model_name, permission_mode, active_tool),
         chunks[3],
     );
 
