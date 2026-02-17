@@ -14,7 +14,7 @@ use ratatui::symbols::border;
 use ratatui::widgets::{Block, Borders, Clear, Widget};
 use ratatui::Frame;
 
-use crate::app::{CompletionState, PluginInfo};
+use crate::app::{CompletionState, PluginInfo, SplitContent};
 use crate::claude::conversation::Conversation;
 use crate::diff::{self, DiffOp};
 use crate::git::GitInfo;
@@ -46,6 +46,8 @@ pub fn render(
     permission_mode: Option<&str>,
     tools_expanded: bool,
     active_tool: Option<(&str, u64)>,
+    split_content: Option<&SplitContent>,
+    split_scroll: usize,
 ) {
     let size = frame.area();
 
@@ -75,15 +77,38 @@ pub fn render(
     // Animated header (compact when conversation has content)
     frame.render_widget(Header::new(theme, frame_count).compact(compact_header), chunks[0]);
 
-    // Claude pane
-    let claude_block = borders::themed_block("", true, theme);
-    let claude_inner = claude_block.inner(chunks[1]);
-    frame.render_widget(claude_block, chunks[1]);
-    frame.render_widget(
-        ClaudePane::new(conversation, theme, scroll_offset, frame_count)
-            .with_tools_expanded(tools_expanded),
-        claude_inner,
-    );
+    // Claude pane (optionally split horizontally with right pane)
+    if let Some(content) = split_content {
+        let pane_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(60),
+                Constraint::Percentage(40),
+            ])
+            .split(chunks[1]);
+
+        // Left: conversation
+        let left_block = borders::themed_block("", true, theme);
+        let left_inner = left_block.inner(pane_chunks[0]);
+        frame.render_widget(left_block, pane_chunks[0]);
+        frame.render_widget(
+            ClaudePane::new(conversation, theme, scroll_offset, frame_count)
+                .with_tools_expanded(tools_expanded),
+            left_inner,
+        );
+
+        // Right: split content
+        render_split_pane(frame, pane_chunks[1], content, split_scroll, theme);
+    } else {
+        let claude_block = borders::themed_block("", true, theme);
+        let claude_inner = claude_block.inner(chunks[1]);
+        frame.render_widget(claude_block, chunks[1]);
+        frame.render_widget(
+            ClaudePane::new(conversation, theme, scroll_offset, frame_count)
+                .with_tools_expanded(tools_expanded),
+            claude_inner,
+        );
+    }
 
     // Input area
     let input_title = if is_streaming { " streaming... " } else { "" };
@@ -106,6 +131,95 @@ pub fn render(
     // Toast notification (floats above status bar)
     if let Some(t) = toast {
         frame.render_widget(ToastWidget::new(t, theme), size);
+    }
+}
+
+/// Render the right split pane with contextual content.
+fn render_split_pane(frame: &mut Frame, area: Rect, content: &SplitContent, scroll: usize, theme: &Theme) {
+    let (title, lines) = match content {
+        SplitContent::FilePreview(path, lines) => {
+            // Show just the filename in the title
+            let name = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(path);
+            (format!(" {} ", name), lines.as_slice())
+        }
+        SplitContent::DiffView(lines) => (" Diff ".to_string(), lines.as_slice()),
+        SplitContent::FileContext(lines) => (" Context ".to_string(), lines.as_slice()),
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(theme.border_focused))
+        .title(title)
+        .title_style(Style::default().fg(theme.primary).add_modifier(Modifier::BOLD));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let buf = frame.buffer_mut();
+    let visible_height = inner.height as usize;
+    let clamped_scroll = scroll.min(lines.len().saturating_sub(visible_height));
+
+    for (i, line) in lines.iter().skip(clamped_scroll).take(visible_height).enumerate() {
+        let y = inner.y + i as u16;
+        let x = inner.x;
+        let max_x = inner.right();
+
+        // Determine style based on content type and line prefix
+        let style = match content {
+            SplitContent::DiffView(_) => {
+                if line.starts_with('+') && !line.starts_with("+++") {
+                    Style::default().fg(theme.success)
+                } else if line.starts_with('-') && !line.starts_with("---") {
+                    Style::default().fg(theme.error)
+                } else if line.starts_with("@@") {
+                    Style::default().fg(theme.info)
+                } else if line.starts_with("---") || line.starts_with("+++") {
+                    Style::default().fg(theme.primary).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.foreground)
+                }
+            }
+            SplitContent::FilePreview(_, _) => {
+                // Show line numbers in dim, content in normal
+                Style::default().fg(theme.foreground)
+            }
+            SplitContent::FileContext(_) => {
+                Style::default().fg(theme.foreground)
+            }
+        };
+
+        let mut cx = x;
+        for ch in line.chars() {
+            if cx >= max_x {
+                break;
+            }
+            buf[(cx, y)].set_symbol(&ch.to_string());
+            buf[(cx, y)].set_style(style);
+            cx += 1;
+        }
+    }
+
+    // Scroll indicator
+    if lines.len() > visible_height {
+        let pct = if lines.len() <= visible_height {
+            100
+        } else {
+            ((clamped_scroll as f64 / (lines.len() - visible_height) as f64) * 100.0) as usize
+        };
+        let indicator = format!(" {}% ", pct);
+        let ind_x = area.right().saturating_sub(indicator.len() as u16 + 1);
+        let ind_y = area.bottom().saturating_sub(1);
+        let ind_style = Style::default().fg(theme.input_placeholder);
+        for (j, ch) in indicator.chars().enumerate() {
+            let px = ind_x + j as u16;
+            if px < area.right() {
+                buf[(px, ind_y)].set_symbol(&ch.to_string());
+                buf[(px, ind_y)].set_style(ind_style);
+            }
+        }
     }
 }
 
