@@ -17,7 +17,7 @@ use crate::history::InputHistory;
 use crate::theme::Theme;
 use crate::todo::TodoTracker;
 use crate::ui;
-use crate::ui::header::HEADER_HEIGHT;
+use crate::ui::header::{COMPACT_HEADER_HEIGHT, HEADER_HEIGHT};
 use crate::ui::input::InputEditor;
 use crate::ui::overlay::{OverlayItem, OverlayState};
 use crate::ui::toast::Toast;
@@ -26,6 +26,7 @@ enum Msg {
     ClaudeEvent(StreamEvent),
     ClaudeExited,
     Key(event::KeyEvent),
+    Paste(String),
     Resize(u16, u16),
     Tick,
 }
@@ -33,6 +34,23 @@ enum Msg {
 /// Actions for commands handled locally (not sent to Claude).
 enum LocalAction {
     Clear,
+}
+
+/// A parsed question from AskUserQuestion tool input.
+#[derive(Clone)]
+struct UserQuestion {
+    question: String,
+    #[allow(dead_code)]
+    header: String,
+    options: Vec<UserQuestionOption>,
+    multi_select: bool,
+}
+
+/// A single option in a UserQuestion.
+#[derive(Clone)]
+struct UserQuestionOption {
+    label: String,
+    description: String,
 }
 
 /// What to do when a TextInput overlay is confirmed.
@@ -61,6 +79,13 @@ enum AppMode {
         value: String,
         cursor: usize,
         action: TextInputAction,
+    },
+    UserQuestion {
+        questions: Vec<UserQuestion>,
+        current_question: usize,
+        cursor: usize,
+        /// For multi-select: tracks which options are toggled on.
+        selected: Vec<bool>,
     },
 }
 
@@ -154,6 +179,9 @@ pub struct App {
     history_browse_index: Option<usize>,
     /// Whether all tool result blocks are expanded (toggled with Ctrl+E).
     tools_expanded: bool,
+    /// Tracks AskUserQuestion tool_use blocks pending user interaction.
+    /// Maps tool_use_id → accumulated input JSON string.
+    pending_user_questions: std::collections::HashMap<String, String>,
 }
 
 impl App {
@@ -200,6 +228,7 @@ impl App {
             history: InputHistory::new(),
             history_browse_index: None,
             tools_expanded: false,
+            pending_user_questions: std::collections::HashMap::new(),
         }
     }
 
@@ -415,15 +444,36 @@ impl App {
                     _ => {}
                 }
 
-                // Update todo tracker when a TodoWrite tool_use block completes
+                // Update todo tracker and track AskUserQuestion when tool_use blocks complete
                 if let StreamEvent::ContentBlockStop { index } = &event {
                     if let Some(msg) = self.conversation.messages.last() {
                         if let Some(crate::claude::conversation::ContentBlock::ToolUse {
-                            name, input, ..
+                            name, input, id,
                         }) = msg.content.get(*index)
                         {
                             if name == "TodoWrite" {
                                 self.todo_tracker.apply_todo_write(input);
+                            }
+                            if name == "AskUserQuestion" {
+                                self.pending_user_questions
+                                    .insert(id.clone(), input.clone());
+                            }
+                        }
+                    }
+                }
+
+                // Intercept ToolResult for AskUserQuestion — show interactive overlay
+                if let StreamEvent::ToolResult { ref tool_use_id, .. } = event {
+                    if let Some(input_json) = self.pending_user_questions.remove(tool_use_id) {
+                        if let Some(questions) = parse_ask_user_questions(&input_json) {
+                            if !questions.is_empty() {
+                                let num_options = questions[0].options.len();
+                                self.mode = AppMode::UserQuestion {
+                                    questions,
+                                    current_question: 0,
+                                    cursor: 0,
+                                    selected: vec![false; num_options],
+                                };
                             }
                         }
                     }
@@ -442,6 +492,13 @@ impl App {
                     return Ok(());
                 }
                 self.handle_key(key).await?;
+            }
+            Msg::Paste(text) => {
+                if matches!(self.mode, AppMode::Normal) {
+                    self.input.insert_str(&text);
+                    self.history_browse_index = None;
+                    self.update_completions();
+                }
             }
             Msg::Resize(_width, _height) => {
                 if self.auto_scroll {
@@ -475,6 +532,7 @@ impl App {
             AppMode::TextViewer { .. } => self.handle_key_text_viewer(key),
             AppMode::HistorySearch { .. } => self.handle_key_history_search(key),
             AppMode::TextInput { .. } => self.handle_key_text_input(key).await,
+            AppMode::UserQuestion { .. } => self.handle_key_user_question(key).await,
         }
     }
 
@@ -722,7 +780,7 @@ impl App {
             | AppMode::ThemePicker(ref mut state)
             | AppMode::SessionPicker(ref mut state)
             | AppMode::CheckpointTimeline(ref mut state) => f(state),
-            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } => {}
+            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } => {}
         }
     }
 
@@ -1079,6 +1137,80 @@ impl App {
         Ok(())
     }
 
+    async fn handle_key_user_question(&mut self, key: event::KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                // Dismiss without answering — Claude already got an error result
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Up => {
+                if let AppMode::UserQuestion { ref mut cursor, ref questions, current_question, .. } = self.mode {
+                    if let Some(q) = questions.get(current_question) {
+                        if !q.options.is_empty() {
+                            *cursor = cursor.checked_sub(1).unwrap_or(q.options.len() - 1);
+                        }
+                    }
+                }
+            }
+            KeyCode::Down => {
+                if let AppMode::UserQuestion { ref mut cursor, ref questions, current_question, .. } = self.mode {
+                    if let Some(q) = questions.get(current_question) {
+                        if !q.options.is_empty() {
+                            *cursor = (*cursor + 1) % q.options.len();
+                        }
+                    }
+                }
+            }
+            KeyCode::Char(' ') => {
+                // Toggle selection for multi-select
+                if let AppMode::UserQuestion { ref mut selected, cursor, ref questions, current_question, .. } = self.mode {
+                    if let Some(q) = questions.get(current_question) {
+                        if q.multi_select {
+                            if let Some(s) = selected.get_mut(cursor) {
+                                *s = !*s;
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                let mode = std::mem::replace(&mut self.mode, AppMode::Normal);
+                if let AppMode::UserQuestion { questions, current_question, cursor, selected } = mode {
+                    if let Some(q) = questions.get(current_question) {
+                        let answer = if q.multi_select {
+                            // Collect all toggled options
+                            let answers: Vec<&str> = q.options.iter()
+                                .enumerate()
+                                .filter(|(i, _)| selected.get(*i).copied().unwrap_or(false))
+                                .map(|(_, opt)| opt.label.as_str())
+                                .collect();
+                            if answers.is_empty() {
+                                // If nothing toggled, use cursor position
+                                q.options.get(cursor).map(|o| o.label.as_str()).unwrap_or("").to_string()
+                            } else {
+                                answers.join(", ")
+                            }
+                        } else {
+                            q.options.get(cursor).map(|o| o.label.clone()).unwrap_or_default()
+                        };
+
+                        if !answer.is_empty() {
+                            // Send the user's answer as a regular message
+                            let response = format!("{}: {}", q.question, answer);
+                            self.conversation.push_user_message(response.clone());
+                            if let Some(ref mut claude) = self.claude {
+                                claude.send_message(&response).await?;
+                            }
+                            self.scroll_to_bottom();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     async fn execute_text_input_action(&mut self, action: TextInputAction, value: &str) -> Result<()> {
         match action {
             TextInputAction::RenameSession => {
@@ -1175,7 +1307,7 @@ impl App {
                     self.toast = Some(Toast::new(format!("Rewinding to turn {}...", value)));
                 }
             }
-            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } => {}
+            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } => {}
         }
         Ok(())
     }
@@ -1409,12 +1541,13 @@ impl App {
             AppMode::ThemePicker(state) => Some(("Select Theme", state)),
             AppMode::SessionPicker(state) => Some(("Resume Session", state)),
             AppMode::CheckpointTimeline(state) => Some(("Rewind to Checkpoint", state)),
-            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } => None,
+            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } => None,
         };
 
         // Clamp scroll before rendering
         let term_size = terminal.size()?;
-        let visible_height = term_size.height.saturating_sub(HEADER_HEIGHT + 4) as usize;
+        let header_h = if self.conversation.messages.is_empty() { HEADER_HEIGHT } else { COMPACT_HEADER_HEIGHT };
+        let visible_height = term_size.height.saturating_sub(header_h + 4) as usize;
         let total_conv_lines = ui::claude_pane::total_lines_with_options(
             &self.conversation,
             term_size.width.saturating_sub(4) as usize,
@@ -1459,6 +1592,12 @@ impl App {
             }
             _ => None,
         };
+        let user_question = match &self.mode {
+            AppMode::UserQuestion { questions, current_question, cursor, selected } => {
+                questions.get(*current_question).map(|q| (q, *cursor, selected.as_slice()))
+            }
+            _ => None,
+        };
 
         terminal.draw(|frame| {
             ui::render(
@@ -1489,6 +1628,20 @@ impl App {
             }
             if let Some((prompt, value, cursor)) = text_input {
                 ui::render_text_input(frame, prompt, value, cursor, theme);
+            }
+            if let Some((question, cursor, selected)) = &user_question {
+                let options: Vec<(&str, &str)> = question.options.iter()
+                    .map(|o| (o.label.as_str(), o.description.as_str()))
+                    .collect();
+                ui::render_user_question(
+                    frame,
+                    &question.question,
+                    &options,
+                    *cursor,
+                    selected,
+                    question.multi_select,
+                    theme,
+                );
             }
         })?;
 
@@ -1561,11 +1714,42 @@ fn expand_file_mentions(text: &str) -> String {
     expanded
 }
 
+/// Parse AskUserQuestion tool input JSON into structured questions.
+fn parse_ask_user_questions(input_json: &str) -> Option<Vec<UserQuestion>> {
+    let val: serde_json::Value = serde_json::from_str(input_json).ok()?;
+    let questions_arr = val.get("questions")?.as_array()?;
+    let mut result = Vec::new();
+    for q in questions_arr {
+        let question = q.get("question")?.as_str()?.to_string();
+        let header = q.get("header").and_then(|h| h.as_str()).unwrap_or("").to_string();
+        let multi_select = q.get("multiSelect").and_then(|m| m.as_bool()).unwrap_or(false);
+        let options_arr = q.get("options")?.as_array()?;
+        let mut options = Vec::new();
+        for opt in options_arr {
+            let label = opt.get("label")?.as_str()?.to_string();
+            let description = opt.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string();
+            options.push(UserQuestionOption { label, description });
+        }
+        result.push(UserQuestion {
+            question,
+            header,
+            options,
+            multi_select,
+        });
+    }
+    Some(result)
+}
+
 fn event_reader_loop(tx: mpsc::UnboundedSender<Msg>) {
     loop {
         match event::read() {
             Ok(Event::Key(key)) => {
                 if tx.send(Msg::Key(key)).is_err() {
+                    break;
+                }
+            }
+            Ok(Event::Paste(text)) => {
+                if tx.send(Msg::Paste(text)).is_err() {
                     break;
                 }
             }
@@ -1633,5 +1817,32 @@ mod tests {
         let expanded = expand_file_mentions(&input);
 
         assert!(expanded.contains("start content"), "Expected file contents");
+    }
+
+    #[test]
+    fn test_parse_ask_user_questions_single() {
+        let json = r#"{"questions":[{"question":"Which approach?","header":"Approach","options":[{"label":"Option A","description":"First option"},{"label":"Option B","description":"Second option"}],"multiSelect":false}]}"#;
+        let questions = parse_ask_user_questions(json).unwrap();
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].question, "Which approach?");
+        assert_eq!(questions[0].options.len(), 2);
+        assert_eq!(questions[0].options[0].label, "Option A");
+        assert_eq!(questions[0].options[1].description, "Second option");
+        assert!(!questions[0].multi_select);
+    }
+
+    #[test]
+    fn test_parse_ask_user_questions_multi_select() {
+        let json = r#"{"questions":[{"question":"Which features?","header":"Features","options":[{"label":"A"},{"label":"B"},{"label":"C"}],"multiSelect":true}]}"#;
+        let questions = parse_ask_user_questions(json).unwrap();
+        assert_eq!(questions.len(), 1);
+        assert!(questions[0].multi_select);
+        assert_eq!(questions[0].options.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_ask_user_questions_invalid() {
+        assert!(parse_ask_user_questions("not json").is_none());
+        assert!(parse_ask_user_questions(r#"{"questions":[]}"#).unwrap().is_empty());
     }
 }

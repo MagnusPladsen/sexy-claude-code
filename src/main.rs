@@ -108,7 +108,8 @@ async fn main() -> Result<()> {
     let mut terminal = ratatui::init();
     crossterm::execute!(
         std::io::stdout(),
-        crossterm::terminal::SetTitle("sexy-claude")
+        crossterm::terminal::SetTitle("sexy-claude"),
+        crossterm::event::EnableBracketedPaste
     )?;
 
     // Run the app — no more PTY setup needed, App handles process spawning
@@ -125,6 +126,10 @@ async fn main() -> Result<()> {
     );
     let result = app.run(&mut terminal).await;
 
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::DisableBracketedPaste
+    );
     ratatui::restore();
 
     result

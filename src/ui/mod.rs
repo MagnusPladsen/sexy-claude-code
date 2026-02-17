@@ -21,7 +21,7 @@ use crate::git::GitInfo;
 use crate::theme::Theme;
 use crate::ui::toast::Toast;
 use claude_pane::ClaudePane;
-use header::{Header, HEADER_HEIGHT};
+use header::{Header, HEADER_HEIGHT, COMPACT_HEADER_HEIGHT};
 use input::{InputEditor, InputWidget};
 use overlay::{OverlayState, OverlayWidget};
 use status_bar::StatusBar;
@@ -51,21 +51,28 @@ pub fn render(
     let input_height = if input.is_empty() {
         1
     } else {
-        3u16.min(input.content().lines().count() as u16 + 1)
+        // Allow input to grow up to 10 lines for multi-line content (e.g. paste)
+        let line_count = input.content().lines().count() as u16 + 1;
+        let max_height = (size.height / 3).max(3).min(10);
+        max_height.min(line_count)
     };
+
+    // Collapse header to single line once conversation has messages
+    let compact_header = !conversation.messages.is_empty();
+    let header_height = if compact_header { COMPACT_HEADER_HEIGHT } else { HEADER_HEIGHT };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(HEADER_HEIGHT),
+            Constraint::Length(header_height),
             Constraint::Min(3),
             Constraint::Length(input_height + 2), // +2 for border
             Constraint::Length(1),
         ])
         .split(size);
 
-    // Animated header
-    frame.render_widget(Header::new(theme, frame_count), chunks[0]);
+    // Animated header (compact when conversation has content)
+    frame.render_widget(Header::new(theme, frame_count).compact(compact_header), chunks[0]);
 
     // Claude pane
     let claude_block = borders::themed_block("", true, theme);
@@ -580,6 +587,179 @@ pub fn render_text_input(
         if let Some(cell) = buf.cell_mut((col, text_y)) {
             cell.set_char(' ');
             cell.set_style(cursor_style);
+        }
+    }
+}
+
+/// Render an interactive question overlay for AskUserQuestion tool calls.
+pub fn render_user_question(
+    frame: &mut Frame,
+    question: &str,
+    options: &[(&str, &str)],
+    cursor: usize,
+    selected: &[bool],
+    multi_select: bool,
+    theme: &Theme,
+) {
+    let area = frame.area();
+
+    // Calculate popup size
+    let max_width = (area.width * 70 / 100).max(40).min(area.width.saturating_sub(4));
+
+    // Height: border(1) + question(1) + blank(1) + options + blank(1) + hint(1) + border(1)
+    let content_height = 3 + options.len() as u16 + 1;
+    let height = (content_height + 2).min(area.height.saturating_sub(2)); // +2 for borders
+    let x = area.x + (area.width.saturating_sub(max_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = Rect::new(x, y, max_width, height);
+
+    let buf = frame.buffer_mut();
+    Clear.render(popup, buf);
+
+    let title = if multi_select { " Select Multiple " } else { " Select One " };
+    let hint = if multi_select {
+        " Space to toggle | Enter to confirm | Esc to dismiss "
+    } else {
+        " Enter to select | Esc to dismiss "
+    };
+    let block = Block::default()
+        .title(title)
+        .title_style(Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))
+        .title_bottom(hint)
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(theme.border_focused))
+        .style(Style::default().bg(theme.surface).fg(theme.foreground));
+
+    let inner = block.inner(popup);
+    block.render(popup, buf);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    // Fill inner background
+    let bg_style = Style::default().bg(theme.surface).fg(theme.foreground);
+    for row in inner.y..inner.bottom() {
+        for col in inner.x..inner.right() {
+            if let Some(cell) = buf.cell_mut((col, row)) {
+                cell.set_char(' ');
+                cell.set_style(bg_style);
+            }
+        }
+    }
+
+    // Render question text (first line, word-wrapped if needed)
+    let question_style = Style::default()
+        .fg(theme.foreground)
+        .bg(theme.surface)
+        .add_modifier(Modifier::BOLD);
+    let mut col = inner.x;
+    let mut row = inner.y;
+    for ch in question.chars() {
+        if col >= inner.right() {
+            col = inner.x;
+            row += 1;
+        }
+        if row >= inner.bottom() {
+            break;
+        }
+        if let Some(cell) = buf.cell_mut((col, row)) {
+            cell.set_char(ch);
+            cell.set_style(question_style);
+        }
+        col += 1;
+    }
+
+    // Render options starting 2 rows after question start
+    let options_start_y = inner.y + 2;
+    for (i, (label, description)) in options.iter().enumerate() {
+        let opt_y = options_start_y + i as u16;
+        if opt_y >= inner.bottom() {
+            break;
+        }
+
+        let is_highlighted = i == cursor;
+        let is_selected = selected.get(i).copied().unwrap_or(false);
+
+        // Choose marker
+        let marker = if multi_select {
+            if is_selected {
+                if is_highlighted { " [x] " } else { " [x] " }
+            } else if is_highlighted {
+                " [ ] "
+            } else {
+                " [ ] "
+            }
+        } else if is_highlighted {
+            " > "
+        } else {
+            "   "
+        };
+
+        let label_style = if is_highlighted {
+            Style::default()
+                .fg(theme.primary)
+                .bg(theme.overlay)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.foreground).bg(theme.surface)
+        };
+        let desc_style = if is_highlighted {
+            Style::default().fg(theme.info).bg(theme.overlay)
+        } else {
+            Style::default().fg(theme.info).bg(theme.surface)
+        };
+
+        // Fill row background if highlighted
+        if is_highlighted {
+            let row_bg = Style::default().bg(theme.overlay);
+            for c in inner.x..inner.right() {
+                if let Some(cell) = buf.cell_mut((c, opt_y)) {
+                    cell.set_char(' ');
+                    cell.set_style(row_bg);
+                }
+            }
+        }
+
+        // Write marker + label
+        let mut c = inner.x;
+        for ch in marker.chars() {
+            if c >= inner.right() { break; }
+            if let Some(cell) = buf.cell_mut((c, opt_y)) {
+                cell.set_char(ch);
+                cell.set_style(label_style);
+            }
+            c += 1;
+        }
+        for ch in label.chars() {
+            if c >= inner.right() { break; }
+            if let Some(cell) = buf.cell_mut((c, opt_y)) {
+                cell.set_char(ch);
+                cell.set_style(label_style);
+            }
+            c += 1;
+        }
+
+        // Write description (if room)
+        if !description.is_empty() && c + 3 < inner.right() {
+            // Separator
+            for ch in " - ".chars() {
+                if c >= inner.right() { break; }
+                if let Some(cell) = buf.cell_mut((c, opt_y)) {
+                    cell.set_char(ch);
+                    cell.set_style(desc_style);
+                }
+                c += 1;
+            }
+            for ch in description.chars() {
+                if c >= inner.right() { break; }
+                if let Some(cell) = buf.cell_mut((c, opt_y)) {
+                    cell.set_char(ch);
+                    cell.set_style(desc_style);
+                }
+                c += 1;
+            }
         }
     }
 }
