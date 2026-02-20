@@ -118,6 +118,7 @@ enum Msg {
     Paste(String),
     Resize(u16, u16),
     Tick,
+    PluginOperationDone { success: bool, message: String },
 }
 
 /// Actions for commands handled locally (not sent to Claude).
@@ -130,6 +131,8 @@ enum LocalAction {
     ShowPlugins,
     Exit,
     ChangeTheme,
+    Resume,
+    Rewind,
 }
 
 /// A parsed question from AskUserQuestion tool input.
@@ -239,6 +242,7 @@ enum AppMode {
         plugins: Vec<PluginInfo>,
         cursor: usize,
         scroll: usize,
+        loading: Option<String>,
     },
     WorkflowPicker(OverlayState),
     AgentDashboard {
@@ -352,6 +356,7 @@ pub struct App {
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: Config,
         theme: Theme,
@@ -422,7 +427,6 @@ impl App {
             permission_mode: self.config.permission_mode.clone(),
             allowed_tools: self.config.allowed_tools.clone(),
             resume_session_id: self.resume_session_id.clone(),
-            ..Default::default()
         }
     }
 
@@ -432,8 +436,7 @@ impl App {
 
         // Spawn Claude process
         let options = self.build_spawn_options();
-        let (claude_process, event_rx) =
-            ClaudeProcess::spawn_with_options(&self.command, options)?;
+        let (claude_process, event_rx) = ClaudeProcess::spawn_with_options(&self.command, options)?;
         self.claude = Some(claude_process);
         Self::forward_claude_events(event_rx, tx.clone());
 
@@ -510,8 +513,7 @@ impl App {
         let mut options = self.build_spawn_options();
         options.resume_session_id = Some(session_id.to_string());
         options.continue_session = false;
-        let (claude_process, event_rx) =
-            ClaudeProcess::spawn_with_options(&self.command, options)?;
+        let (claude_process, event_rx) = ClaudeProcess::spawn_with_options(&self.command, options)?;
         self.claude = Some(claude_process);
 
         // Forward events from the new process
@@ -536,8 +538,7 @@ impl App {
         self.slash_commands.clear();
         self.session_id = None;
 
-        let (claude_process, event_rx) =
-            ClaudeProcess::spawn_with_continue(&self.command)?;
+        let (claude_process, event_rx) = ClaudeProcess::spawn_with_continue(&self.command)?;
         self.claude = Some(claude_process);
 
         if let Some(ref tx) = self.event_tx {
@@ -563,7 +564,12 @@ impl App {
                 }
 
                 // Show toast for empty slash command results, clear tracking
-                if let StreamEvent::Result { ref text, is_error, ref permission_denials } = event {
+                if let StreamEvent::Result {
+                    ref text,
+                    is_error,
+                    ref permission_denials,
+                } = event
+                {
                     if !permission_denials.is_empty() {
                         let denied: Vec<&str> = permission_denials
                             .iter()
@@ -590,7 +596,11 @@ impl App {
                 }
 
                 // Show toast for hook lifecycle events
-                if let StreamEvent::SystemHook { ref subtype, ref hook_id } = event {
+                if let StreamEvent::SystemHook {
+                    ref subtype,
+                    ref hook_id,
+                } = event
+                {
                     let name = hook_id.as_deref().unwrap_or("hook");
                     match subtype.as_str() {
                         "hook_started" => {
@@ -605,15 +615,11 @@ impl App {
 
                 // Accumulate token usage
                 match &event {
-                    StreamEvent::MessageStart {
-                        usage: Some(u), ..
-                    } => {
+                    StreamEvent::MessageStart { usage: Some(u), .. } => {
                         self.total_input_tokens += u.input_tokens;
                         self.total_output_tokens += u.output_tokens;
                     }
-                    StreamEvent::MessageDelta {
-                        usage: Some(u), ..
-                    } => {
+                    StreamEvent::MessageDelta { usage: Some(u), .. } => {
                         self.total_output_tokens += u.output_tokens;
                     }
                     _ => {}
@@ -623,7 +629,9 @@ impl App {
                 if let StreamEvent::ContentBlockStop { index } = &event {
                     if let Some(msg) = self.conversation.messages.last() {
                         if let Some(crate::claude::conversation::ContentBlock::ToolUse {
-                            name, input, id,
+                            name,
+                            input,
+                            id,
                         }) = msg.content.get(*index)
                         {
                             if name == "TodoWrite" {
@@ -635,7 +643,8 @@ impl App {
                             }
                             // Track sub-agent spawning via Task tool
                             if name == "Task" {
-                                if let Ok(value) = serde_json::from_str::<serde_json::Value>(input) {
+                                if let Ok(value) = serde_json::from_str::<serde_json::Value>(input)
+                                {
                                     let description = value
                                         .get("description")
                                         .and_then(|v| v.as_str())
@@ -660,7 +669,10 @@ impl App {
                 }
 
                 // Mark agent tasks complete when their ToolResult arrives
-                if let StreamEvent::ToolResult { ref tool_use_id, .. } = event {
+                if let StreamEvent::ToolResult {
+                    ref tool_use_id, ..
+                } = event
+                {
                     for task in &mut self.agent_tasks {
                         if task.id == *tool_use_id {
                             task.completed = true;
@@ -669,7 +681,10 @@ impl App {
                 }
 
                 // Intercept ToolResult for AskUserQuestion — show interactive overlay
-                if let StreamEvent::ToolResult { ref tool_use_id, .. } = event {
+                if let StreamEvent::ToolResult {
+                    ref tool_use_id, ..
+                } = event
+                {
                     if let Some(input_json) = self.pending_user_questions.remove(tool_use_id) {
                         if let Some(questions) = parse_ask_user_questions(&input_json) {
                             if !questions.is_empty() {
@@ -727,6 +742,24 @@ impl App {
                 if self.frame_count - self.git_last_refresh >= refresh_interval {
                     self.git_info = GitInfo::gather();
                     self.git_last_refresh = self.frame_count;
+                }
+            }
+            Msg::PluginOperationDone { success, message } => {
+                self.toast = Some(Toast::new(message));
+                if success {
+                    // Refresh plugin list, preserve browser mode
+                    let plugins = Self::discover_plugins();
+                    self.mode = AppMode::PluginBrowser {
+                        plugins,
+                        cursor: 0,
+                        scroll: 0,
+                        loading: None,
+                    };
+                } else if let AppMode::PluginBrowser {
+                    ref mut loading, ..
+                } = self.mode
+                {
+                    *loading = None;
                 }
             }
         }
@@ -806,7 +839,11 @@ impl App {
 
         if ctrl && key.code == KeyCode::Char('e') {
             self.tools_expanded = !self.tools_expanded;
-            let msg = if self.tools_expanded { "Tool output expanded" } else { "Tool output collapsed" };
+            let msg = if self.tools_expanded {
+                "Tool output expanded"
+            } else {
+                "Tool output collapsed"
+            };
             self.toast = Some(Toast::new(msg.to_string()));
             return Ok(());
         }
@@ -818,7 +855,11 @@ impl App {
 
         if ctrl && key.code == KeyCode::Char('s') {
             self.split_pane = !self.split_pane;
-            let msg = if self.split_pane { "Split pane enabled" } else { "Split pane closed" };
+            let msg = if self.split_pane {
+                "Split pane enabled"
+            } else {
+                "Split pane closed"
+            };
             self.toast = Some(Toast::new(msg.to_string()));
             return Ok(());
         }
@@ -888,37 +929,33 @@ impl App {
         }
 
         // History browsing with Up/Down when input is empty (and no completion popup)
-        if self.completion.is_none() && self.input.is_empty() {
-            match key.code {
-                KeyCode::Up => {
-                    let idx = self.history_browse_index.map(|i| i + 1).unwrap_or(0);
-                    if let Some(entry) = self.history.get_reverse(idx) {
-                        self.input.set_content(entry);
-                        self.history_browse_index = Some(idx);
-                    }
-                    return Ok(());
-                }
-                _ => {}
+        if self.completion.is_none() && self.input.is_empty() && key.code == KeyCode::Up {
+            let idx = self.history_browse_index.map(|i| i + 1).unwrap_or(0);
+            if let Some(entry) = self.history.get_reverse(idx) {
+                self.input.set_content(entry);
+                self.history_browse_index = Some(idx);
             }
+            return Ok(());
         }
         // Down arrow while browsing history
-        if self.completion.is_none() && self.history_browse_index.is_some() {
-            if key.code == KeyCode::Down {
-                if let Some(idx) = self.history_browse_index {
-                    if idx == 0 {
-                        // Past newest — clear input
-                        self.input.set_content("");
-                        self.history_browse_index = None;
-                    } else {
-                        let new_idx = idx - 1;
-                        if let Some(entry) = self.history.get_reverse(new_idx) {
-                            self.input.set_content(entry);
-                            self.history_browse_index = Some(new_idx);
-                        }
+        if self.completion.is_none()
+            && self.history_browse_index.is_some()
+            && key.code == KeyCode::Down
+        {
+            if let Some(idx) = self.history_browse_index {
+                if idx == 0 {
+                    // Past newest — clear input
+                    self.input.set_content("");
+                    self.history_browse_index = None;
+                } else {
+                    let new_idx = idx - 1;
+                    if let Some(entry) = self.history.get_reverse(new_idx) {
+                        self.input.set_content(entry);
+                        self.history_browse_index = Some(new_idx);
                     }
                 }
-                return Ok(());
             }
+            return Ok(());
         }
 
         // Input handling
@@ -944,7 +981,9 @@ impl App {
                                 self.show_config_viewer();
                             }
                             LocalAction::ShowModel => {
-                                let model = self.detected_model.as_deref()
+                                let model = self
+                                    .detected_model
+                                    .as_deref()
                                     .or(self.model_override.as_deref())
                                     .or(self.config.model.as_deref())
                                     .unwrap_or("(default)");
@@ -961,6 +1000,12 @@ impl App {
                             }
                             LocalAction::ChangeTheme => {
                                 self.open_theme_picker();
+                            }
+                            LocalAction::Resume => {
+                                self.open_session_picker();
+                            }
+                            LocalAction::Rewind => {
+                                self.open_checkpoint_timeline();
                             }
                         }
                     } else if let Some(prompt) = self.resolve_custom_command(&text) {
@@ -1060,7 +1105,13 @@ impl App {
             | AppMode::SessionPicker(ref mut state)
             | AppMode::CheckpointTimeline(ref mut state)
             | AppMode::WorkflowPicker(ref mut state) => f(state),
-            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } | AppMode::PluginBrowser { .. } | AppMode::AgentDashboard { .. } => {}
+            AppMode::Normal
+            | AppMode::TextViewer { .. }
+            | AppMode::HistorySearch { .. }
+            | AppMode::TextInput { .. }
+            | AppMode::UserQuestion { .. }
+            | AppMode::PluginBrowser { .. }
+            | AppMode::AgentDashboard { .. } => {}
         }
     }
 
@@ -1149,11 +1200,7 @@ impl App {
             self.completion = None;
         } else {
             // Preserve selection index if possible
-            let prev_selected = self
-                .completion
-                .as_ref()
-                .map(|s| s.selected)
-                .unwrap_or(0);
+            let prev_selected = self.completion.as_ref().map(|s| s.selected).unwrap_or(0);
             let mut state = CompletionState::new(matches);
             state.selected = prev_selected.min(state.matches.len().saturating_sub(1));
             self.completion = Some(state);
@@ -1192,6 +1239,8 @@ impl App {
             "/plugins" => Some(LocalAction::ShowPlugins),
             "/exit" | "/quit" => Some(LocalAction::Exit),
             "/theme" => Some(LocalAction::ChangeTheme),
+            "/resume" => Some(LocalAction::Resume),
+            "/rewind" => Some(LocalAction::Rewind),
             _ => None,
         }
     }
@@ -1201,7 +1250,12 @@ impl App {
     }
 
     fn clamp_scroll(&mut self) {
-        let total = ui::claude_pane::total_lines_with_options(&self.conversation, 80, &self.theme, self.tools_expanded);
+        let total = ui::claude_pane::total_lines_with_options(
+            &self.conversation,
+            80,
+            &self.theme,
+            self.tools_expanded,
+        );
         let max_scroll = total.saturating_sub(10);
         if self.scroll_offset >= max_scroll {
             self.scroll_offset = max_scroll;
@@ -1282,7 +1336,11 @@ impl App {
             hint: "Ctrl+W".to_string(),
         });
         items.push(OverlayItem {
-            label: if self.split_pane { "Close Split Pane".to_string() } else { "Split Pane".to_string() },
+            label: if self.split_pane {
+                "Close Split Pane".to_string()
+            } else {
+                "Split Pane".to_string()
+            },
             value: "split".to_string(),
             hint: "Ctrl+S".to_string(),
         });
@@ -1346,7 +1404,9 @@ impl App {
             self.toast = Some(Toast::new("No history yet".to_string()));
             return;
         }
-        let matches: Vec<String> = self.history.search("")
+        let matches: Vec<String> = self
+            .history
+            .search("")
             .into_iter()
             .map(|(_, e)| e.to_string())
             .collect();
@@ -1358,8 +1418,15 @@ impl App {
     }
 
     fn refresh_history_matches(&mut self) {
-        if let AppMode::HistorySearch { ref query, ref mut matches, ref mut selected } = self.mode {
-            *matches = self.history.search(query)
+        if let AppMode::HistorySearch {
+            ref query,
+            ref mut matches,
+            ref mut selected,
+        } = self.mode
+        {
+            *matches = self
+                .history
+                .search(query)
                 .into_iter()
                 .map(|(_, e)| e.to_string())
                 .collect();
@@ -1373,7 +1440,12 @@ impl App {
                 self.mode = AppMode::Normal;
             }
             KeyCode::Enter => {
-                let selected_text = if let AppMode::HistorySearch { ref matches, selected, .. } = self.mode {
+                let selected_text = if let AppMode::HistorySearch {
+                    ref matches,
+                    selected,
+                    ..
+                } = self.mode
+                {
                     matches.get(selected).cloned()
                 } else {
                     None
@@ -1384,14 +1456,24 @@ impl App {
                 }
             }
             KeyCode::Up => {
-                if let AppMode::HistorySearch { ref matches, ref mut selected, .. } = self.mode {
+                if let AppMode::HistorySearch {
+                    ref matches,
+                    ref mut selected,
+                    ..
+                } = self.mode
+                {
                     if !matches.is_empty() {
                         *selected = selected.checked_sub(1).unwrap_or(matches.len() - 1);
                     }
                 }
             }
             KeyCode::Down => {
-                if let AppMode::HistorySearch { ref matches, ref mut selected, .. } = self.mode {
+                if let AppMode::HistorySearch {
+                    ref matches,
+                    ref mut selected,
+                    ..
+                } = self.mode
+                {
                     if !matches.is_empty() {
                         *selected = (*selected + 1) % matches.len();
                     }
@@ -1428,7 +1510,12 @@ impl App {
                 }
             }
             KeyCode::Backspace => {
-                if let AppMode::TextInput { ref mut value, ref mut cursor, .. } = self.mode {
+                if let AppMode::TextInput {
+                    ref mut value,
+                    ref mut cursor,
+                    ..
+                } = self.mode
+                {
                     if *cursor > 0 {
                         value.remove(*cursor - 1);
                         *cursor -= 1;
@@ -1441,7 +1528,12 @@ impl App {
                 }
             }
             KeyCode::Right => {
-                if let AppMode::TextInput { ref value, ref mut cursor, .. } = self.mode {
+                if let AppMode::TextInput {
+                    ref value,
+                    ref mut cursor,
+                    ..
+                } = self.mode
+                {
                     if *cursor < value.len() {
                         *cursor += 1;
                     }
@@ -1453,12 +1545,22 @@ impl App {
                 }
             }
             KeyCode::End => {
-                if let AppMode::TextInput { ref value, ref mut cursor, .. } = self.mode {
+                if let AppMode::TextInput {
+                    ref value,
+                    ref mut cursor,
+                    ..
+                } = self.mode
+                {
                     *cursor = value.len();
                 }
             }
             KeyCode::Char(c) => {
-                if let AppMode::TextInput { ref mut value, ref mut cursor, .. } = self.mode {
+                if let AppMode::TextInput {
+                    ref mut value,
+                    ref mut cursor,
+                    ..
+                } = self.mode
+                {
                     value.insert(*cursor, c);
                     *cursor += 1;
                 }
@@ -1475,7 +1577,13 @@ impl App {
                 self.mode = AppMode::Normal;
             }
             KeyCode::Up => {
-                if let AppMode::UserQuestion { ref mut cursor, ref questions, current_question, .. } = self.mode {
+                if let AppMode::UserQuestion {
+                    ref mut cursor,
+                    ref questions,
+                    current_question,
+                    ..
+                } = self.mode
+                {
                     if let Some(q) = questions.get(current_question) {
                         if !q.options.is_empty() {
                             *cursor = cursor.checked_sub(1).unwrap_or(q.options.len() - 1);
@@ -1484,7 +1592,13 @@ impl App {
                 }
             }
             KeyCode::Down => {
-                if let AppMode::UserQuestion { ref mut cursor, ref questions, current_question, .. } = self.mode {
+                if let AppMode::UserQuestion {
+                    ref mut cursor,
+                    ref questions,
+                    current_question,
+                    ..
+                } = self.mode
+                {
                     if let Some(q) = questions.get(current_question) {
                         if !q.options.is_empty() {
                             *cursor = (*cursor + 1) % q.options.len();
@@ -1494,7 +1608,14 @@ impl App {
             }
             KeyCode::Char(' ') => {
                 // Toggle selection for multi-select
-                if let AppMode::UserQuestion { ref mut selected, cursor, ref questions, current_question, .. } = self.mode {
+                if let AppMode::UserQuestion {
+                    ref mut selected,
+                    cursor,
+                    ref questions,
+                    current_question,
+                    ..
+                } = self.mode
+                {
                     if let Some(q) = questions.get(current_question) {
                         if q.multi_select {
                             if let Some(s) = selected.get_mut(cursor) {
@@ -1506,23 +1627,38 @@ impl App {
             }
             KeyCode::Enter => {
                 let mode = std::mem::replace(&mut self.mode, AppMode::Normal);
-                if let AppMode::UserQuestion { questions, current_question, cursor, selected } = mode {
+                if let AppMode::UserQuestion {
+                    questions,
+                    current_question,
+                    cursor,
+                    selected,
+                } = mode
+                {
                     if let Some(q) = questions.get(current_question) {
                         let answer = if q.multi_select {
                             // Collect all toggled options
-                            let answers: Vec<&str> = q.options.iter()
+                            let answers: Vec<&str> = q
+                                .options
+                                .iter()
                                 .enumerate()
                                 .filter(|(i, _)| selected.get(*i).copied().unwrap_or(false))
                                 .map(|(_, opt)| opt.label.as_str())
                                 .collect();
                             if answers.is_empty() {
                                 // If nothing toggled, use cursor position
-                                q.options.get(cursor).map(|o| o.label.as_str()).unwrap_or("").to_string()
+                                q.options
+                                    .get(cursor)
+                                    .map(|o| o.label.as_str())
+                                    .unwrap_or("")
+                                    .to_string()
                             } else {
                                 answers.join(", ")
                             }
                         } else {
-                            q.options.get(cursor).map(|o| o.label.clone()).unwrap_or_default()
+                            q.options
+                                .get(cursor)
+                                .map(|o| o.label.clone())
+                                .unwrap_or_default()
                         };
 
                         if !answer.is_empty() {
@@ -1542,7 +1678,11 @@ impl App {
         Ok(())
     }
 
-    async fn execute_text_input_action(&mut self, action: TextInputAction, value: &str) -> Result<()> {
+    async fn execute_text_input_action(
+        &mut self,
+        action: TextInputAction,
+        value: &str,
+    ) -> Result<()> {
         match action {
             TextInputAction::RenameSession => {
                 if !self.has_slash_command("rename") {
@@ -1619,7 +1759,11 @@ impl App {
                         "workflows" => self.open_workflow_picker(),
                         "split" => {
                             self.split_pane = !self.split_pane;
-                            let msg = if self.split_pane { "Split pane enabled" } else { "Split pane closed" };
+                            let msg = if self.split_pane {
+                                "Split pane enabled"
+                            } else {
+                                "Split pane closed"
+                            };
                             self.toast = Some(Toast::new(msg.to_string()));
                         }
                         "agents" => self.open_agent_dashboard(),
@@ -1656,7 +1800,13 @@ impl App {
                     }
                 }
             }
-            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } | AppMode::PluginBrowser { .. } | AppMode::AgentDashboard { .. } => {}
+            AppMode::Normal
+            | AppMode::TextViewer { .. }
+            | AppMode::HistorySearch { .. }
+            | AppMode::TextInput { .. }
+            | AppMode::UserQuestion { .. }
+            | AppMode::PluginBrowser { .. }
+            | AppMode::AgentDashboard { .. } => {}
         }
         Ok(())
     }
@@ -1762,8 +1912,8 @@ impl App {
         // Derive project memory directory from cwd
         let cwd = std::env::current_dir().unwrap_or_default();
         let project_key = cwd.to_string_lossy().replace('/', "-");
-        let memory_dir = dirs::home_dir()
-            .map(|h| h.join(".claude/projects").join(&project_key).join("memory"));
+        let memory_dir =
+            dirs::home_dir().map(|h| h.join(".claude/projects").join(&project_key).join("memory"));
 
         let mut combined = String::new();
         let mut file_count = 0;
@@ -1780,7 +1930,9 @@ impl App {
                 files.sort_by(|a, b| {
                     let a_is_memory = a.file_name() == "MEMORY.md";
                     let b_is_memory = b.file_name() == "MEMORY.md";
-                    b_is_memory.cmp(&a_is_memory).then(a.file_name().cmp(&b.file_name()))
+                    b_is_memory
+                        .cmp(&a_is_memory)
+                        .then(a.file_name().cmp(&b.file_name()))
                 });
 
                 for entry in files {
@@ -1883,7 +2035,13 @@ impl App {
         // Sort: enabled first, then installed, then available; alphabetically within groups
         plugins.sort_by(|a, b| {
             let rank = |p: &PluginInfo| -> u8 {
-                if p.enabled { 0 } else if p.installed { 1 } else { 2 }
+                if p.enabled {
+                    0
+                } else if p.installed {
+                    1
+                } else {
+                    2
+                }
             };
             rank(a).cmp(&rank(b)).then(a.name.cmp(&b.name))
         });
@@ -1941,10 +2099,25 @@ impl App {
             plugins,
             cursor: 0,
             scroll: 0,
+            loading: None,
         };
     }
 
     async fn handle_key_plugin_browser(&mut self, key: event::KeyEvent) -> Result<()> {
+        // Ignore input while a plugin operation is in progress
+        if matches!(
+            self.mode,
+            AppMode::PluginBrowser {
+                loading: Some(_),
+                ..
+            }
+        ) {
+            if matches!(key.code, KeyCode::Esc) {
+                self.mode = AppMode::Normal;
+            }
+            return Ok(());
+        }
+
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.mode = AppMode::Normal;
@@ -1955,7 +2128,12 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if let AppMode::PluginBrowser { ref mut cursor, ref plugins, .. } = self.mode {
+                if let AppMode::PluginBrowser {
+                    ref mut cursor,
+                    ref plugins,
+                    ..
+                } = self.mode
+                {
                     if *cursor + 1 < plugins.len() {
                         *cursor += 1;
                     }
@@ -1963,15 +2141,33 @@ impl App {
             }
             KeyCode::Enter => {
                 // Open plugin README in TextViewer
-                if let AppMode::PluginBrowser { ref plugins, cursor, .. } = self.mode {
+                if let AppMode::PluginBrowser {
+                    ref plugins,
+                    cursor,
+                    ..
+                } = self.mode
+                {
                     if let Some(plugin) = plugins.get(cursor) {
                         let home = dirs::home_dir().unwrap_or_default();
-                        let marketplace_dir = home.join(".claude/plugins/marketplaces").join(&plugin.marketplace);
-                        let subdir = if plugin.is_mcp { "external_plugins" } else { "plugins" };
-                        let readme_path = marketplace_dir.join(subdir).join(&plugin.name).join("README.md");
+                        let marketplace_dir = home
+                            .join(".claude/plugins/marketplaces")
+                            .join(&plugin.marketplace);
+                        let subdir = if plugin.is_mcp {
+                            "external_plugins"
+                        } else {
+                            "plugins"
+                        };
+                        let readme_path = marketplace_dir
+                            .join(subdir)
+                            .join(&plugin.name)
+                            .join("README.md");
 
-                        let content = std::fs::read_to_string(&readme_path)
-                            .unwrap_or_else(|_| format!("# {}\n\n{}\n\nNo README available.", plugin.name, plugin.description));
+                        let content = std::fs::read_to_string(&readme_path).unwrap_or_else(|_| {
+                            format!(
+                                "# {}\n\n{}\n\nNo README available.",
+                                plugin.name, plugin.description
+                            )
+                        });
                         let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
                         self.mode = AppMode::TextViewer {
                             title: format!("{} ({})", plugin.name, plugin.marketplace),
@@ -1983,7 +2179,12 @@ impl App {
             }
             KeyCode::Char(' ') => {
                 // Toggle enable/disable
-                let cmd = if let AppMode::PluginBrowser { ref plugins, cursor, .. } = self.mode {
+                let cmd = if let AppMode::PluginBrowser {
+                    ref plugins,
+                    cursor,
+                    ..
+                } = self.mode
+                {
                     plugins.get(cursor).filter(|p| p.installed).map(|p| {
                         let action = if p.enabled { "disable" } else { "enable" };
                         (action.to_string(), p.full_name())
@@ -1992,90 +2193,100 @@ impl App {
                     None
                 };
                 if let Some((action, name)) = cmd {
-                    let output = std::process::Command::new("claude")
-                        .args(["plugin", &action, &name])
-                        .env_remove("CLAUDECODE")
-                        .env_remove("CLAUDE_CODE_ENTRYPOINT")
-                        .output();
-                    match output {
-                        Ok(o) if o.status.success() => {
-                            self.toast = Some(Toast::new(format!("Plugin {action}d: {name}")));
-                            // Refresh the plugin list
-                            let plugins = Self::discover_plugins();
-                            self.mode = AppMode::PluginBrowser { plugins, cursor: 0, scroll: 0 };
-                        }
-                        Ok(o) => {
-                            let err = String::from_utf8_lossy(&o.stderr);
-                            self.toast = Some(Toast::new(format!("Failed: {err}")));
-                        }
-                        Err(e) => {
-                            self.toast = Some(Toast::new(format!("Error: {e}")));
-                        }
-                    }
+                    self.spawn_plugin_operation(&action, &name);
                 }
             }
             KeyCode::Char('i') => {
                 // Install uninstalled plugin
-                let cmd = if let AppMode::PluginBrowser { ref plugins, cursor, .. } = self.mode {
-                    plugins.get(cursor).filter(|p| !p.installed).map(|p| p.full_name())
+                let name = if let AppMode::PluginBrowser {
+                    ref plugins,
+                    cursor,
+                    ..
+                } = self.mode
+                {
+                    plugins
+                        .get(cursor)
+                        .filter(|p| !p.installed)
+                        .map(|p| p.full_name())
                 } else {
                     None
                 };
-                if let Some(name) = cmd {
-                    self.toast = Some(Toast::new(format!("Installing {name}...")));
-                    let output = std::process::Command::new("claude")
-                        .args(["plugin", "install", &name])
-                        .env_remove("CLAUDECODE")
-                        .env_remove("CLAUDE_CODE_ENTRYPOINT")
-                        .output();
-                    match output {
-                        Ok(o) if o.status.success() => {
-                            self.toast = Some(Toast::new(format!("Installed: {name}")));
-                            let plugins = Self::discover_plugins();
-                            self.mode = AppMode::PluginBrowser { plugins, cursor: 0, scroll: 0 };
-                        }
-                        Ok(o) => {
-                            let err = String::from_utf8_lossy(&o.stderr);
-                            self.toast = Some(Toast::new(format!("Install failed: {err}")));
-                        }
-                        Err(e) => {
-                            self.toast = Some(Toast::new(format!("Error: {e}")));
-                        }
-                    }
+                if let Some(name) = name {
+                    self.spawn_plugin_operation("install", &name);
                 }
             }
             KeyCode::Char('u') => {
                 // Uninstall installed plugin
-                let cmd = if let AppMode::PluginBrowser { ref plugins, cursor, .. } = self.mode {
-                    plugins.get(cursor).filter(|p| p.installed).map(|p| p.full_name())
+                let name = if let AppMode::PluginBrowser {
+                    ref plugins,
+                    cursor,
+                    ..
+                } = self.mode
+                {
+                    plugins
+                        .get(cursor)
+                        .filter(|p| p.installed)
+                        .map(|p| p.full_name())
                 } else {
                     None
                 };
-                if let Some(name) = cmd {
-                    let output = std::process::Command::new("claude")
-                        .args(["plugin", "uninstall", &name])
-                        .env_remove("CLAUDECODE")
-                        .env_remove("CLAUDE_CODE_ENTRYPOINT")
-                        .output();
-                    match output {
-                        Ok(o) if o.status.success() => {
-                            self.toast = Some(Toast::new(format!("Uninstalled: {name}")));
-                            let plugins = Self::discover_plugins();
-                            self.mode = AppMode::PluginBrowser { plugins, cursor: 0, scroll: 0 };
-                        }
-                        Ok(o) => {
-                            let err = String::from_utf8_lossy(&o.stderr);
-                            self.toast = Some(Toast::new(format!("Uninstall failed: {err}")));
-                        }
-                        Err(e) => {
-                            self.toast = Some(Toast::new(format!("Error: {e}")));
-                        }
-                    }
+                if let Some(name) = name {
+                    self.spawn_plugin_operation("uninstall", &name);
                 }
             }
             _ => {}
         }
         Ok(())
+    }
+
+    /// Spawn a plugin CLI operation (install/uninstall/enable/disable) in the background.
+    fn spawn_plugin_operation(&mut self, action: &str, name: &str) {
+        if let AppMode::PluginBrowser {
+            ref mut loading, ..
+        } = self.mode
+        {
+            let label = match action {
+                "install" => format!("Installing {name}..."),
+                "uninstall" => format!("Uninstalling {name}..."),
+                "enable" => format!("Enabling {name}..."),
+                "disable" => format!("Disabling {name}..."),
+                _ => format!("{action} {name}..."),
+            };
+            *loading = Some(label);
+        }
+
+        let action = action.to_string();
+        let name = name.to_string();
+        let tx = self.event_tx.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let output = std::process::Command::new("claude")
+                .args(["plugin", &action, &name])
+                .env_remove("CLAUDECODE")
+                .env_remove("CLAUDE_CODE_ENTRYPOINT")
+                .output();
+
+            let (success, message) = match output {
+                Ok(o) if o.status.success() => {
+                    let msg = match action.as_str() {
+                        "install" => format!("Installed: {name}"),
+                        "uninstall" => format!("Uninstalled: {name}"),
+                        "enable" | "disable" => format!("Plugin {action}d: {name}"),
+                        _ => format!("{action}: {name}"),
+                    };
+                    (true, msg)
+                }
+                Ok(o) => {
+                    let err = String::from_utf8_lossy(&o.stderr);
+                    (false, format!("Failed: {err}"))
+                }
+                Err(e) => (false, format!("Error: {e}")),
+            };
+
+            if let Some(tx) = tx {
+                let _ = tx.send(Msg::PluginOperationDone { success, message });
+            }
+        });
     }
 
     fn open_diff_viewer(&mut self) {
@@ -2114,13 +2325,12 @@ impl App {
                                 .get("file_path")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("unknown");
-                            let content = value
-                                .get("content")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
+                            let content =
+                                value.get("content").and_then(|v| v.as_str()).unwrap_or("");
                             let line_count = content.lines().count();
-                            diff_text
-                                .push_str(&format!("+++ {file_path} (new file, {line_count} lines)\n\n"));
+                            diff_text.push_str(&format!(
+                                "+++ {file_path} (new file, {line_count} lines)\n\n"
+                            ));
                         }
                     }
                 }
@@ -2164,7 +2374,8 @@ impl App {
                                     .get("new_string")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("");
-                                let mut lines = vec![format!("--- {file_path}"), format!("+++ {file_path}")];
+                                let mut lines =
+                                    vec![format!("--- {file_path}"), format!("+++ {file_path}")];
                                 let ops = crate::diff::diff_lines(old, new);
                                 for line in crate::diff::format_unified(&ops).lines() {
                                     lines.push(line.to_string());
@@ -2191,11 +2402,10 @@ impl App {
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("unknown")
                                     .to_string();
-                                let content = value
-                                    .get("content")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
-                                let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+                                let content =
+                                    value.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                                let lines: Vec<String> =
+                                    content.lines().map(|l| l.to_string()).collect();
                                 self.split_content = SplitContent::FilePreview(file_path, lines);
                                 self.split_scroll = 0;
                             }
@@ -2207,7 +2417,12 @@ impl App {
         }
 
         // When a ToolResult arrives for a Read, populate with the actual content
-        if let StreamEvent::ToolResult { ref tool_use_id, ref content, .. } = event {
+        if let StreamEvent::ToolResult {
+            ref tool_use_id,
+            ref content,
+            ..
+        } = event
+        {
             // Find the matching ToolUse to check if it was a Read
             for msg in self.conversation.messages.iter().rev() {
                 for block in msg.content.iter().rev() {
@@ -2215,7 +2430,8 @@ impl App {
                         if id == tool_use_id && name == "Read" {
                             if let SplitContent::FilePreview(ref path, _) = self.split_content {
                                 let path = path.clone();
-                                let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+                                let lines: Vec<String> =
+                                    content.lines().map(|l| l.to_string()).collect();
                                 self.split_content = SplitContent::FilePreview(path, lines);
                                 self.split_scroll = 0;
                             }
@@ -2293,18 +2509,22 @@ impl App {
             turn_number += 1;
 
             // Extract first line of user text as preview
-            let preview = msg.content.iter().find_map(|block| {
-                if let ContentBlock::Text(text) = block {
-                    let first_line = text.trim().lines().next().unwrap_or("").to_string();
-                    if first_line.len() > 60 {
-                        Some(format!("{}...", &first_line[..57]))
+            let preview = msg
+                .content
+                .iter()
+                .find_map(|block| {
+                    if let ContentBlock::Text(text) = block {
+                        let first_line = text.trim().lines().next().unwrap_or("").to_string();
+                        if first_line.len() > 60 {
+                            Some(format!("{}...", &first_line[..57]))
+                        } else {
+                            Some(first_line)
+                        }
                     } else {
-                        Some(first_line)
+                        None
                     }
-                } else {
-                    None
-                }
-            }).unwrap_or_else(|| "(empty)".to_string());
+                })
+                .unwrap_or_else(|| "(empty)".to_string());
 
             items.push(OverlayItem {
                 label: format!("Turn {} — {}", turn_number, preview),
@@ -2366,12 +2586,22 @@ impl App {
             AppMode::SessionPicker(state) => Some(("Resume Session", state)),
             AppMode::CheckpointTimeline(state) => Some(("Rewind to Checkpoint", state)),
             AppMode::WorkflowPicker(state) => Some(("Workflow Templates", state)),
-            AppMode::Normal | AppMode::TextViewer { .. } | AppMode::HistorySearch { .. } | AppMode::TextInput { .. } | AppMode::UserQuestion { .. } | AppMode::PluginBrowser { .. } | AppMode::AgentDashboard { .. } => None,
+            AppMode::Normal
+            | AppMode::TextViewer { .. }
+            | AppMode::HistorySearch { .. }
+            | AppMode::TextInput { .. }
+            | AppMode::UserQuestion { .. }
+            | AppMode::PluginBrowser { .. }
+            | AppMode::AgentDashboard { .. } => None,
         };
 
         // Clamp scroll before rendering
         let term_size = terminal.size()?;
-        let header_h = if self.conversation.messages.is_empty() { HEADER_HEIGHT } else { COMPACT_HEADER_HEIGHT };
+        let header_h = if self.conversation.messages.is_empty() {
+            HEADER_HEIGHT
+        } else {
+            COMPACT_HEADER_HEIGHT
+        };
         let visible_height = term_size.height.saturating_sub(header_h + 4) as usize;
         let total_conv_lines = ui::claude_pane::total_lines_with_options(
             &self.conversation,
@@ -2392,7 +2622,9 @@ impl App {
         let token_usage = (self.total_input_tokens, self.total_output_tokens);
         let git_info = &self.git_info;
         let todo_summary = self.todo_tracker.summary();
-        let model_name = self.detected_model.as_deref()
+        let model_name = self
+            .detected_model
+            .as_deref()
             .or(self.model_override.as_deref())
             .or(self.config.model.as_deref());
         let permission_mode = self.config.permission_mode.as_deref();
@@ -2406,38 +2638,56 @@ impl App {
             _ => None,
         };
         let history_search = match &self.mode {
-            AppMode::HistorySearch { query, matches, selected } => {
-                Some((query.as_str(), matches.as_slice(), *selected))
-            }
+            AppMode::HistorySearch {
+                query,
+                matches,
+                selected,
+            } => Some((query.as_str(), matches.as_slice(), *selected)),
             _ => None,
         };
         let text_input = match &self.mode {
-            AppMode::TextInput { prompt, value, cursor, .. } => {
-                Some((prompt.as_str(), value.as_str(), *cursor))
-            }
+            AppMode::TextInput {
+                prompt,
+                value,
+                cursor,
+                ..
+            } => Some((prompt.as_str(), value.as_str(), *cursor)),
             _ => None,
         };
         let user_question = match &self.mode {
-            AppMode::UserQuestion { questions, current_question, cursor, selected } => {
-                questions.get(*current_question).map(|q| (q, *cursor, selected.as_slice()))
-            }
+            AppMode::UserQuestion {
+                questions,
+                current_question,
+                cursor,
+                selected,
+            } => questions
+                .get(*current_question)
+                .map(|q| (q, *cursor, selected.as_slice())),
             _ => None,
         };
         let plugin_browser = match &self.mode {
-            AppMode::PluginBrowser { plugins, cursor, scroll } => {
-                Some((plugins.as_slice(), *cursor, *scroll))
-            }
+            AppMode::PluginBrowser {
+                plugins,
+                cursor,
+                scroll,
+                loading,
+            } => Some((plugins.as_slice(), *cursor, *scroll, loading.as_deref())),
             _ => None,
         };
         let agent_dashboard = match &self.mode {
             AppMode::AgentDashboard { scroll } => Some((&self.agent_tasks, *scroll)),
             _ => None,
         };
-        let split_content = if self.split_pane { Some(&self.split_content) } else { None };
+        let split_content = if self.split_pane {
+            Some(&self.split_content)
+        } else {
+            None
+        };
         let split_scroll = self.split_scroll;
 
         terminal.draw(|frame| {
-            let active_tool = conversation.active_tool_name()
+            let active_tool = conversation
+                .active_tool_name()
                 .map(|name| (name, conversation.tool_elapsed_secs().unwrap_or(0)));
             ui::render(
                 frame,
@@ -2472,7 +2722,9 @@ impl App {
                 ui::render_text_input(frame, prompt, value, cursor, theme);
             }
             if let Some((question, cursor, selected)) = &user_question {
-                let options: Vec<(&str, &str)> = question.options.iter()
+                let options: Vec<(&str, &str)> = question
+                    .options
+                    .iter()
                     .map(|o| (o.label.as_str(), o.description.as_str()))
                     .collect();
                 ui::render_user_question(
@@ -2485,8 +2737,8 @@ impl App {
                     theme,
                 );
             }
-            if let Some((plugins, cursor, scroll)) = plugin_browser {
-                ui::render_plugin_browser(frame, plugins, cursor, scroll, theme);
+            if let Some((plugins, cursor, scroll, loading)) = plugin_browser {
+                ui::render_plugin_browser(frame, plugins, cursor, scroll, loading, theme);
             }
             if let Some((tasks, scroll)) = agent_dashboard {
                 ui::render_agent_dashboard(frame, tasks, scroll, theme);
@@ -2536,7 +2788,11 @@ fn expand_file_mentions(text: &str) -> String {
                         if let Ok(content) = std::fs::read_to_string(path) {
                             // Limit to 100KB to avoid massive context injection
                             let truncated = if content.len() > 100_000 {
-                                format!("{}...\n[truncated, file is {} bytes]", &content[..100_000], content.len())
+                                format!(
+                                    "{}...\n[truncated, file is {} bytes]",
+                                    &content[..100_000],
+                                    content.len()
+                                )
                             } else {
                                 content
                             };
@@ -2569,13 +2825,24 @@ fn parse_ask_user_questions(input_json: &str) -> Option<Vec<UserQuestion>> {
     let mut result = Vec::new();
     for q in questions_arr {
         let question = q.get("question")?.as_str()?.to_string();
-        let header = q.get("header").and_then(|h| h.as_str()).unwrap_or("").to_string();
-        let multi_select = q.get("multiSelect").and_then(|m| m.as_bool()).unwrap_or(false);
+        let header = q
+            .get("header")
+            .and_then(|h| h.as_str())
+            .unwrap_or("")
+            .to_string();
+        let multi_select = q
+            .get("multiSelect")
+            .and_then(|m| m.as_bool())
+            .unwrap_or(false);
         let options_arr = q.get("options")?.as_array()?;
         let mut options = Vec::new();
         for opt in options_arr {
             let label = opt.get("label")?.as_str()?.to_string();
-            let description = opt.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string();
+            let description = opt
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("")
+                .to_string();
             options.push(UserQuestionOption { label, description });
         }
         result.push(UserQuestion {
@@ -2650,8 +2917,14 @@ mod tests {
         let expanded = expand_file_mentions(&input);
 
         assert!(expanded.contains("<file path="), "Expected file tag");
-        assert!(expanded.contains("file contents here"), "Expected file contents");
-        assert!(expanded.contains(&input), "Expected original text preserved");
+        assert!(
+            expanded.contains("file contents here"),
+            "Expected file contents"
+        );
+        assert!(
+            expanded.contains(&input),
+            "Expected original text preserved"
+        );
     }
 
     #[test]
@@ -2691,6 +2964,8 @@ mod tests {
     #[test]
     fn test_parse_ask_user_questions_invalid() {
         assert!(parse_ask_user_questions("not json").is_none());
-        assert!(parse_ask_user_questions(r#"{"questions":[]}"#).unwrap().is_empty());
+        assert!(parse_ask_user_questions(r#"{"questions":[]}"#)
+            .unwrap()
+            .is_empty());
     }
 }

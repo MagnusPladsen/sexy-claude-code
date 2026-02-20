@@ -94,7 +94,13 @@ impl InputHistory {
 
         if query.is_empty() {
             // Return all entries, most recent first
-            return self.entries.iter().rev().enumerate().map(|(i, e)| (i, e.as_str())).collect();
+            return self
+                .entries
+                .iter()
+                .rev()
+                .enumerate()
+                .map(|(i, e)| (i, e.as_str()))
+                .collect();
         }
 
         let matcher = SkimMatcherV2::default();
@@ -111,7 +117,10 @@ impl InputHistory {
             .collect();
 
         matches.sort_by(|a, b| b.0.cmp(&a.0));
-        matches.into_iter().map(|(_, idx, entry)| (idx, entry)).collect()
+        matches
+            .into_iter()
+            .map(|(_, idx, entry)| (idx, entry))
+            .collect()
     }
 }
 

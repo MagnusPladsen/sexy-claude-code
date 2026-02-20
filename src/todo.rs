@@ -2,6 +2,7 @@ use serde::Deserialize;
 
 /// A single todo item from Claude's TodoWrite tool.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct TodoItem {
     pub id: String,
     pub content: String,
@@ -63,6 +64,7 @@ impl TodoTracker {
     }
 
     /// Count of pending + in_progress items.
+    #[allow(dead_code)]
     pub fn active_count(&self) -> usize {
         self.items
             .iter()
@@ -89,6 +91,7 @@ impl TodoTracker {
     }
 
     /// Returns the currently in-progress task content, if any.
+    #[allow(dead_code)]
     pub fn current_task(&self) -> Option<&str> {
         self.items
             .iter()
@@ -144,7 +147,8 @@ mod tests {
     #[test]
     fn test_replaces_previous_list() {
         let mut tracker = TodoTracker::new();
-        tracker.apply_todo_write(r#"{"todos": [{"id": "1", "content": "Old", "status": "pending"}]}"#);
+        tracker
+            .apply_todo_write(r#"{"todos": [{"id": "1", "content": "Old", "status": "pending"}]}"#);
         assert_eq!(tracker.items.len(), 1);
 
         tracker.apply_todo_write(r#"{"todos": [{"id": "2", "content": "New A", "status": "pending"}, {"id": "3", "content": "New B", "status": "pending"}]}"#);

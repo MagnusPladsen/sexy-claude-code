@@ -16,7 +16,10 @@ fn test_pty_spawn_echo() {
         .expect("Failed to open PTY");
 
     // Clone reader BEFORE spawning so we have it ready
-    let mut reader = pair.master.try_clone_reader().expect("Failed to clone reader");
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .expect("Failed to clone reader");
 
     let mut cmd = CommandBuilder::new("echo");
     cmd.arg("hello from pty");
@@ -65,7 +68,10 @@ fn test_pty_vt100_captures_output() {
         .expect("Failed to open PTY");
 
     // Clone reader BEFORE spawning
-    let mut reader = pair.master.try_clone_reader().expect("Failed to clone reader");
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .expect("Failed to clone reader");
 
     let mut cmd = CommandBuilder::new("printf");
     cmd.arg("Line1\\nLine2\\nLine3");
