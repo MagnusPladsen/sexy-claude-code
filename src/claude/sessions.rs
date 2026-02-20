@@ -119,8 +119,7 @@ fn extract_preview(path: &PathBuf) -> String {
                         if let Some(arr) = content.as_array() {
                             for block in arr {
                                 if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                    if let Some(text) = block.get("text").and_then(|t| t.as_str())
-                                    {
+                                    if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
                                         return truncate_preview(text);
                                     }
                                 }
@@ -185,10 +184,7 @@ mod tests {
 
     #[test]
     fn test_truncate_preview_multiline() {
-        assert_eq!(
-            truncate_preview("First line\nSecond line"),
-            "First line"
-        );
+        assert_eq!(truncate_preview("First line\nSecond line"), "First line");
     }
 
     #[test]

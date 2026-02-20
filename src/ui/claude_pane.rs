@@ -62,7 +62,12 @@ impl Widget for ClaudePane<'_> {
         }
 
         // Convert conversation to wrapped lines
-        let mut lines = render_conversation_with_options(self.conversation, area.width as usize, self.theme, self.tools_expanded);
+        let mut lines = render_conversation_with_options(
+            self.conversation,
+            area.width as usize,
+            self.theme,
+            self.tools_expanded,
+        );
 
         // Show spinner when waiting for tool execution or streaming
         if self.conversation.is_awaiting_tool_result() || self.conversation.is_streaming() {
@@ -189,11 +194,20 @@ fn separator_style() -> Style {
 
 /// Convert the entire conversation into styled, wrapped lines for rendering.
 #[cfg(test)]
-fn render_conversation(conversation: &Conversation, width: usize, theme: &Theme) -> Vec<StyledLine> {
+fn render_conversation(
+    conversation: &Conversation,
+    width: usize,
+    theme: &Theme,
+) -> Vec<StyledLine> {
     render_conversation_with_options(conversation, width, theme, false)
 }
 
-fn render_conversation_with_options(conversation: &Conversation, width: usize, theme: &Theme, tools_expanded: bool) -> Vec<StyledLine> {
+fn render_conversation_with_options(
+    conversation: &Conversation,
+    width: usize,
+    theme: &Theme,
+    tools_expanded: bool,
+) -> Vec<StyledLine> {
     let mut lines = Vec::new();
     let content_width = width.saturating_sub(2); // 2-char left padding
 
@@ -209,7 +223,13 @@ fn render_conversation_with_options(conversation: &Conversation, width: usize, t
     lines
 }
 
-fn render_message(msg: &Message, lines: &mut Vec<StyledLine>, content_width: usize, theme: &Theme, tools_expanded: bool) {
+fn render_message(
+    msg: &Message,
+    lines: &mut Vec<StyledLine>,
+    content_width: usize,
+    theme: &Theme,
+    tools_expanded: bool,
+) {
     // Role label line
     match msg.role {
         Role::User => {
@@ -237,9 +257,7 @@ fn render_message(msg: &Message, lines: &mut Vec<StyledLine>, content_width: usi
         .content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::ToolResult { tool_use_id, .. } => {
-                Some((tool_use_id.as_str(), block))
-            }
+            ContentBlock::ToolResult { tool_use_id, .. } => Some((tool_use_id.as_str(), block)),
             _ => None,
         })
         .collect();
@@ -389,8 +407,14 @@ fn render_edit_diff(input: &str, lines: &mut Vec<StyledLine>, theme: &Theme) {
         Ok(v) => v,
         Err(_) => return,
     };
-    let old = value.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
-    let new = value.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+    let old = value
+        .get("old_string")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let new = value
+        .get("new_string")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
     if old.is_empty() && new.is_empty() {
         return;
@@ -410,9 +434,8 @@ fn render_edit_diff(input: &str, lines: &mut Vec<StyledLine>, theme: &Theme) {
         .add_modifier(Modifier::DIM);
 
     let total = visible.len();
-    let mut shown = 0;
 
-    for op in &visible {
+    for (shown, op) in visible.iter().enumerate() {
         if shown >= DIFF_MAX_LINES {
             break;
         }
@@ -427,13 +450,10 @@ fn render_edit_diff(input: &str, lines: &mut Vec<StyledLine>, theme: &Theme) {
                 lines.push(StyledLine::plain(&format!("    + {line}"), added_style));
             }
         }
-        shown += 1;
     }
 
     if total > DIFF_MAX_LINES {
-        let dim_style = Style::default()
-            .fg(theme.info)
-            .add_modifier(Modifier::DIM);
+        let dim_style = Style::default().fg(theme.info).add_modifier(Modifier::DIM);
         lines.push(StyledLine::plain(
             &format!("    ... {} more diff lines", total - DIFF_MAX_LINES),
             dim_style,
@@ -462,9 +482,7 @@ fn render_write_preview(input: &str, lines: &mut Vec<StyledLine>, theme: &Theme)
         lines.push(StyledLine::plain(&format!("    {line_text}"), dim_style));
     }
     if total > preview_lines {
-        let info_style = Style::default()
-            .fg(theme.info)
-            .add_modifier(Modifier::DIM);
+        let info_style = Style::default().fg(theme.info).add_modifier(Modifier::DIM);
         lines.push(StyledLine::plain(
             &format!("    ... {} more lines", total - preview_lines),
             info_style,
@@ -518,9 +536,7 @@ fn render_tool_result(
             ));
         }
         if total_lines > TOOL_RESULT_COLLAPSE_PREVIEW {
-            let dim_style = Style::default()
-                .fg(theme.info)
-                .add_modifier(Modifier::DIM);
+            let dim_style = Style::default().fg(theme.info).add_modifier(Modifier::DIM);
             lines.push(StyledLine::plain(
                 &format!(
                     "    ... {} more lines",
@@ -572,11 +588,12 @@ fn render_thinking(text: &str, lines: &mut Vec<StyledLine>, theme: &Theme) {
         ));
     }
     if total_lines > THINKING_COLLAPSE_PREVIEW {
-        let dim_style = Style::default()
-            .fg(theme.info)
-            .add_modifier(Modifier::DIM);
+        let dim_style = Style::default().fg(theme.info).add_modifier(Modifier::DIM);
         lines.push(StyledLine::plain(
-            &format!("    ... {} more lines", total_lines - THINKING_COLLAPSE_PREVIEW),
+            &format!(
+                "    ... {} more lines",
+                total_lines - THINKING_COLLAPSE_PREVIEW
+            ),
             dim_style,
         ));
     }
@@ -626,12 +643,7 @@ fn extract_primary_arg(tool_name: &str, input: &str) -> Option<String> {
 }
 
 /// Word-wrap a list of styled spans to fit within `max_width`, prepending `indent` to each line.
-fn wrap_spans(
-    spans: &[StyledSpan],
-    indent: &str,
-    lines: &mut Vec<StyledLine>,
-    max_width: usize,
-) {
+fn wrap_spans(spans: &[StyledSpan], indent: &str, lines: &mut Vec<StyledLine>, max_width: usize) {
     let indent_width = display_width(indent);
     let available = max_width.saturating_sub(indent_width);
     if available == 0 {
@@ -724,9 +736,7 @@ fn wrap_spans(
 
 /// Calculate display width of a string (accounting for wide chars like emoji).
 fn display_width(s: &str) -> usize {
-    s.chars()
-        .map(|c| c.width().unwrap_or(0))
-        .sum()
+    s.chars().map(|c| c.width().unwrap_or(0)).sum()
 }
 
 /// Split a string at approximately `max_width` display columns, preferring word boundaries.
@@ -769,7 +779,12 @@ fn split_at_width(s: &str, max_width: usize) -> (&str, &str) {
 }
 
 /// Calculate total number of rendered lines for scroll calculations.
-pub fn total_lines_with_options(conversation: &Conversation, width: usize, theme: &Theme, tools_expanded: bool) -> usize {
+pub fn total_lines_with_options(
+    conversation: &Conversation,
+    width: usize,
+    theme: &Theme,
+    tools_expanded: bool,
+) -> usize {
     render_conversation_with_options(conversation, width, theme, tools_expanded).len()
 }
 
@@ -846,7 +861,10 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .map(|s| s.text.as_str())
             .collect();
-        assert!(all_text.contains("Bash"), "Expected tool name 'Bash' in output");
+        assert!(
+            all_text.contains("Bash"),
+            "Expected tool name 'Bash' in output"
+        );
         assert!(all_text.contains("ls"), "Expected command 'ls' in output");
     }
 
@@ -906,7 +924,10 @@ mod tests {
     fn test_tool_result_collapsed_shows_truncated() {
         let mut conv = Conversation::new();
         let theme = crate::theme::Theme::default_theme();
-        let long_output = (0..30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let long_output = (0..30)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         conv.messages.push(Message {
             role: Role::Assistant,
             content: vec![
@@ -932,7 +953,10 @@ mod tests {
         assert!(all_text.contains("line 0"), "Expected first line");
         assert!(all_text.contains("line 19"), "Expected line 19 (20th line)");
         assert!(!all_text.contains("line 20"), "Line 20 should be hidden");
-        assert!(all_text.contains("more lines"), "Expected 'more lines' indicator");
+        assert!(
+            all_text.contains("more lines"),
+            "Expected 'more lines' indicator"
+        );
     }
 
     #[test]
@@ -963,7 +987,10 @@ mod tests {
             .collect();
         // Tool header should show error indicator
         assert!(all_text.contains("Bash"), "Expected tool name");
-        assert!(all_text.contains("✗"), "Expected error indicator on tool header");
+        assert!(
+            all_text.contains("✗"),
+            "Expected error indicator on tool header"
+        );
         // Error label should appear before content
         assert!(all_text.contains("✗ Error"), "Expected error label");
         // Tool header should use error color
@@ -978,9 +1005,9 @@ mod tests {
             .unwrap();
         assert_eq!(name_span.style.fg, Some(theme.error));
         // Content should use error color
-        let content_line = lines.iter().find(|l| {
-            l.spans.iter().any(|s| s.text.contains("command failed"))
-        });
+        let content_line = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.text.contains("command failed")));
         assert!(content_line.is_some(), "Expected a line with error content");
         let error_span = content_line
             .unwrap()
@@ -1013,7 +1040,11 @@ mod tests {
         });
         let lines = render_conversation(&conv, 80, &theme);
         // Should only have the label + tool use line, no result output
-        assert!(lines.len() <= 3, "Empty result should produce no extra lines, got {}", lines.len());
+        assert!(
+            lines.len() <= 3,
+            "Empty result should produce no extra lines, got {}",
+            lines.len()
+        );
     }
 
     #[test]
@@ -1028,7 +1059,11 @@ mod tests {
         // Narrow width to force wrapping
         let lines = render_conversation(&conv, 40, &theme);
         // Should produce multiple lines (label + wrapped text + blank)
-        assert!(lines.len() > 3, "Expected wrapping, got {} lines", lines.len());
+        assert!(
+            lines.len() > 3,
+            "Expected wrapping, got {} lines",
+            lines.len()
+        );
     }
 
     #[test]
@@ -1113,7 +1148,10 @@ mod tests {
             .map(|s| s.text.as_str())
             .collect();
         assert!(all_text.contains("Thinking..."), "Expected thinking header");
-        assert!(all_text.contains("Let me analyze this."), "Expected thinking content");
+        assert!(
+            all_text.contains("Let me analyze this."),
+            "Expected thinking content"
+        );
     }
 
     #[test]
@@ -1130,7 +1168,10 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .map(|s| s.text.as_str())
             .collect();
-        assert!(!all_text.contains("Thinking"), "Empty thinking should be hidden");
+        assert!(
+            !all_text.contains("Thinking"),
+            "Empty thinking should be hidden"
+        );
     }
 
     #[test]
@@ -1151,7 +1192,10 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .map(|s| s.text.as_str())
             .collect();
-        assert!(all_text.contains("... 6 more lines"), "Expected collapse indicator");
+        assert!(
+            all_text.contains("... 6 more lines"),
+            "Expected collapse indicator"
+        );
     }
 
     #[test]
@@ -1186,7 +1230,8 @@ mod tests {
             content: vec![ContentBlock::ToolUse {
                 id: "t1".to_string(),
                 name: "Write".to_string(),
-                input: r#"{"file_path":"test.txt","content":"line one\nline two\nline three"}"#.to_string(),
+                input: r#"{"file_path":"test.txt","content":"line one\nline two\nline three"}"#
+                    .to_string(),
             }],
         });
         let lines = render_conversation(&conv, 80, &theme);
@@ -1197,7 +1242,10 @@ mod tests {
             .collect();
         assert!(all_text.contains("Write"), "Expected Write tool header");
         assert!(all_text.contains("line one"), "Expected content preview");
-        assert!(all_text.contains("line three"), "Expected all content lines");
+        assert!(
+            all_text.contains("line three"),
+            "Expected all content lines"
+        );
     }
 
     #[test]

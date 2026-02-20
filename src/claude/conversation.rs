@@ -92,14 +92,6 @@ impl Conversation {
         });
     }
 
-    /// Add a system/info message displayed as an assistant message.
-    pub fn push_system_message(&mut self, text: String) {
-        self.messages.push(Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::Text(text)],
-        });
-    }
-
     /// Process a single stream event, updating the conversation state.
     pub fn apply_event(&mut self, event: &StreamEvent) {
         match event {
@@ -579,7 +571,10 @@ mod tests {
         conv.apply_event(&StreamEvent::ContentBlockStop { index: 0 });
 
         // 30-line output should auto-collapse
-        let long_output = (0..30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let long_output = (0..30)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         conv.apply_event(&StreamEvent::ToolResult {
             tool_use_id: "toolu_long".to_string(),
             content: long_output,
