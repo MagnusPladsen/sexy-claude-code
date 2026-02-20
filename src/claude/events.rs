@@ -12,9 +12,17 @@ pub enum StreamEvent {
         model: String,
         usage: Option<Usage>,
     },
-    ContentBlockStart { index: usize, block_type: ContentBlockType },
-    ContentBlockDelta { index: usize, delta: Delta },
-    ContentBlockStop { index: usize },
+    ContentBlockStart {
+        index: usize,
+        block_type: ContentBlockType,
+    },
+    ContentBlockDelta {
+        index: usize,
+        delta: Delta,
+    },
+    ContentBlockStop {
+        index: usize,
+    },
     MessageDelta {
         stop_reason: Option<String>,
         usage: Option<Usage>,
@@ -65,15 +73,23 @@ pub struct Usage {
 #[derive(Debug, Clone)]
 pub enum ContentBlockType {
     Text,
-    ToolUse { id: String, name: String },
+    ToolUse {
+        id: String,
+        name: String,
+    },
     Thinking,
     /// Image content block (e.g. screenshots from tools).
-    Image { media_type: String },
+    Image {
+        media_type: String,
+    },
     /// Document content block (e.g. PDFs).
-    Document { doc_type: String },
+    Document {
+        doc_type: String,
+    },
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
 pub enum Delta {
     TextDelta(String),
     InputJsonDelta(String),
@@ -190,12 +206,10 @@ pub fn parse_event(line: &str) -> StreamEvent {
             parse_raw_event(raw, line)
         }
         // System init carries slash commands and session ID
-        "system" if envelope.subtype.as_deref() == Some("init") => {
-            StreamEvent::SystemInit {
-                slash_commands: envelope.slash_commands.unwrap_or_default(),
-                session_id: envelope.session_id,
-            }
-        }
+        "system" if envelope.subtype.as_deref() == Some("init") => StreamEvent::SystemInit {
+            slash_commands: envelope.slash_commands.unwrap_or_default(),
+            session_id: envelope.session_id,
+        },
         // System hook lifecycle events (hook_started, hook_completed)
         "system" => {
             let subtype = envelope.subtype.unwrap_or_default();
@@ -209,7 +223,11 @@ pub fn parse_event(line: &str) -> StreamEvent {
             let text = envelope.result.unwrap_or_default();
             let is_error = envelope.is_error.unwrap_or(false);
             let permission_denials = envelope.permission_denials.unwrap_or_default();
-            StreamEvent::Result { text, is_error, permission_denials }
+            StreamEvent::Result {
+                text,
+                is_error,
+                permission_denials,
+            }
         }
         // Tool result from tool execution — emitted as {"type":"user","message":{...}}
         "user" => parse_tool_result(&envelope, line),
@@ -287,7 +305,10 @@ fn parse_tool_result(envelope: &Envelope, line: &str) -> StreamEvent {
 fn extract_clean_content(envelope: &Envelope) -> Option<String> {
     let meta = envelope.tool_use_result.as_ref()?;
     // File tool results: {"type":"text","file":{"content":"..."}}
-    if let Some(content) = meta.get("file").and_then(|f| f.get("content")).and_then(|c| c.as_str())
+    if let Some(content) = meta
+        .get("file")
+        .and_then(|f| f.get("content"))
+        .and_then(|c| c.as_str())
     {
         return Some(content.to_string());
     }
@@ -403,7 +424,9 @@ mod tests {
         let line = r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6","stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}},"session_id":"abc","uuid":"def"}"#;
         let event = parse_event(line);
         match event {
-            StreamEvent::MessageStart { message_id, model, .. } => {
+            StreamEvent::MessageStart {
+                message_id, model, ..
+            } => {
                 assert_eq!(message_id, "msg_123");
                 assert_eq!(model, "claude-opus-4-6");
             }
@@ -489,7 +512,8 @@ mod tests {
 
     #[test]
     fn test_parse_system_hook_event() {
-        let line = r#"{"type":"system","subtype":"hook_started","hook_id":"abc","session_id":"def"}"#;
+        let line =
+            r#"{"type":"system","subtype":"hook_started","hook_id":"abc","session_id":"def"}"#;
         let event = parse_event(line);
         match event {
             StreamEvent::SystemHook { subtype, hook_id } => {
@@ -531,7 +555,9 @@ mod tests {
         let line = r#"{"type":"result","subtype":"success","result":"done","permission_denials":[{"tool_name":"Bash","tool_use_id":"toolu_123","tool_input":{"command":"rm -rf /"}}],"session_id":"abc"}"#;
         let event = parse_event(line);
         match event {
-            StreamEvent::Result { permission_denials, .. } => {
+            StreamEvent::Result {
+                permission_denials, ..
+            } => {
                 assert_eq!(permission_denials.len(), 1);
                 assert_eq!(permission_denials[0].tool_name, "Bash");
             }
@@ -553,7 +579,9 @@ mod tests {
         let line = r#"{"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6","stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}"#;
         let event = parse_event(line);
         match event {
-            StreamEvent::MessageStart { message_id, model, .. } => {
+            StreamEvent::MessageStart {
+                message_id, model, ..
+            } => {
                 assert_eq!(message_id, "msg_123");
                 assert_eq!(model, "claude-opus-4-6");
             }

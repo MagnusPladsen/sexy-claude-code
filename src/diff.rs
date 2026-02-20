@@ -179,11 +179,7 @@ mod tests {
         let ops = diff_lines("a\nc", "a\nb\nc");
         assert_eq!(
             ops,
-            vec![
-                DiffOp::Equal("a"),
-                DiffOp::Add("b"),
-                DiffOp::Equal("c"),
-            ]
+            vec![DiffOp::Equal("a"), DiffOp::Add("b"), DiffOp::Equal("c"),]
         );
     }
 
@@ -192,11 +188,7 @@ mod tests {
         let ops = diff_lines("a\nb\nc", "a\nc");
         assert_eq!(
             ops,
-            vec![
-                DiffOp::Equal("a"),
-                DiffOp::Remove("b"),
-                DiffOp::Equal("c"),
-            ]
+            vec![DiffOp::Equal("a"), DiffOp::Remove("b"), DiffOp::Equal("c"),]
         );
     }
 
@@ -247,7 +239,10 @@ mod tests {
         let new = "{\n    a\n}\n{\n    c\n}";
         let ops = diff_lines(old, new);
         // Should only show b→c change, not match braces incorrectly
-        let changes: Vec<_> = ops.iter().filter(|o| !matches!(o, DiffOp::Equal(_))).collect();
+        let changes: Vec<_> = ops
+            .iter()
+            .filter(|o| !matches!(o, DiffOp::Equal(_)))
+            .collect();
         assert_eq!(changes.len(), 2); // Remove "    b", Add "    c"
     }
 

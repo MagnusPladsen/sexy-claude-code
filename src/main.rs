@@ -17,7 +17,10 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "sexy-claude", about = "A beautiful terminal wrapper for Claude Code")]
+#[command(
+    name = "sexy-claude",
+    about = "A beautiful terminal wrapper for Claude Code"
+)]
 #[command(version)]
 struct Cli {
     /// Theme name (e.g., catppuccin-mocha, nord, dracula)
@@ -73,8 +76,8 @@ struct Cli {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let mut config = config::Config::load(cli.config.as_ref())
-        .context("Failed to load configuration")?;
+    let mut config =
+        config::Config::load(cli.config.as_ref()).context("Failed to load configuration")?;
 
     // Apply CLI overrides to config
     if cli.mcp_config.is_some() {
@@ -91,7 +94,10 @@ async fn main() -> Result<()> {
 
     let theme_name = cli.theme.as_deref().unwrap_or(&config.theme);
     let theme = theme::Theme::load(theme_name).unwrap_or_else(|e| {
-        eprintln!("Warning: Failed to load theme '{}': {}. Using default.", theme_name, e);
+        eprintln!(
+            "Warning: Failed to load theme '{}': {}. Using default.",
+            theme_name, e
+        );
         theme::Theme::default_theme()
     });
 
@@ -111,7 +117,11 @@ async fn main() -> Result<()> {
 
     let (cols, rows) = crossterm::terminal::size().context("Failed to get terminal size")?;
     if cols < 40 || rows < 10 {
-        anyhow::bail!("Terminal too small ({}x{}). Need at least 40x10.", cols, rows);
+        anyhow::bail!(
+            "Terminal too small ({}x{}). Need at least 40x10.",
+            cols,
+            rows
+        );
     }
 
     // Initialize terminal
@@ -138,10 +148,7 @@ async fn main() -> Result<()> {
     );
     let result = app.run(&mut terminal).await;
 
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::event::DisableBracketedPaste
-    );
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
     ratatui::restore();
 
     result

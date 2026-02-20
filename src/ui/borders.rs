@@ -11,11 +11,7 @@ pub fn themed_block<'a>(title: &'a str, focused: bool, theme: &Theme) -> Block<'
         theme.border
     };
 
-    let title_style = Style::default().fg(if focused {
-        theme.primary
-    } else {
-        theme.border
-    });
+    let title_style = Style::default().fg(if focused { theme.primary } else { theme.border });
 
     Block::default()
         .title(title)

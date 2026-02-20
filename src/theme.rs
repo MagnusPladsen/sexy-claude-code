@@ -286,7 +286,12 @@ mod tests {
             if path.extension().and_then(|e| e.to_str()) == Some("toml") {
                 let content = std::fs::read_to_string(&path).unwrap();
                 let result = Theme::from_toml(&content);
-                assert!(result.is_ok(), "Failed to parse theme {}: {:?}", path.display(), result.err());
+                assert!(
+                    result.is_ok(),
+                    "Failed to parse theme {}: {:?}",
+                    path.display(),
+                    result.err()
+                );
             }
         }
     }

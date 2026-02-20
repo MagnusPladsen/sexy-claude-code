@@ -1,5 +1,4 @@
 /// Model pricing and cost calculation for token usage.
-
 /// Pricing per 1M tokens for a given model.
 #[derive(Debug, Clone, Copy)]
 pub struct ModelPricing {

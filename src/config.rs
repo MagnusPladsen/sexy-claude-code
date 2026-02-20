@@ -83,7 +83,10 @@ impl Config {
     }
 
     fn validate(&self) -> Result<()> {
-        anyhow::ensure!(self.fps >= 1 && self.fps <= 120, "fps must be between 1 and 120");
+        anyhow::ensure!(
+            self.fps >= 1 && self.fps <= 120,
+            "fps must be between 1 and 120"
+        );
         anyhow::ensure!(
             self.layout.claude_pane_percent >= 20 && self.layout.claude_pane_percent <= 100,
             "claude_pane_percent must be between 20 and 100"
@@ -116,8 +119,7 @@ pub fn save_theme(theme_name: &str, path: &std::path::Path) -> Result<()> {
             .with_context(|| format!("Failed to create config directory {}", parent.display()))?;
     }
 
-    let content = toml::to_string_pretty(&table)
-        .context("Failed to serialize config")?;
+    let content = toml::to_string_pretty(&table).context("Failed to serialize config")?;
     std::fs::write(path, content)
         .with_context(|| format!("Failed to write config to {}", path.display()))?;
 
@@ -244,7 +246,11 @@ mod tests {
     fn test_save_theme_preserves_other_fields() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        std::fs::write(&path, "command = \"custom-claude\"\ntheme = \"old\"\nfps = 60\n").unwrap();
+        std::fs::write(
+            &path,
+            "command = \"custom-claude\"\ntheme = \"old\"\nfps = 60\n",
+        )
+        .unwrap();
         save_theme("dracula", &path).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("theme = \"dracula\""));

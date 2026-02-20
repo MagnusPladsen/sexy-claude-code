@@ -34,9 +34,7 @@ impl PtyProcess {
             .context("Failed to open PTY")?;
 
         let parts: Vec<&str> = command.split_whitespace().collect();
-        let (program, args) = parts
-            .split_first()
-            .context("Empty command")?;
+        let (program, args) = parts.split_first().context("Empty command")?;
 
         let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
@@ -97,11 +95,7 @@ impl PtyProcess {
 
     #[allow(dead_code)]
     pub fn is_alive(&mut self) -> bool {
-        self.child
-            .try_wait()
-            .ok()
-            .flatten()
-            .is_none()
+        self.child.try_wait().ok().flatten().is_none()
     }
 
     pub fn kill(&mut self) {
