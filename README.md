@@ -1,3 +1,5 @@
+![AI-assisted](https://img.shields.io/badge/built%20with-AI%20assistance-blue)
+
 # sexy-claude (sc)
 
 [![GitHub release](https://img.shields.io/github/v/release/MagnusPladsen/sexy-claude-code?include_prereleases&style=flat-square)](https://github.com/MagnusPladsen/sexy-claude-code/releases)
