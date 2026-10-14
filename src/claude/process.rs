@@ -32,26 +32,6 @@ pub struct ClaudeProcess {
 }
 
 impl ClaudeProcess {
-    /// Spawn claude in print mode with stream-json I/O.
-    /// Returns the process handle and a receiver for parsed events.
-    pub fn spawn(command: &str) -> Result<(Self, mpsc::UnboundedReceiver<StreamEvent>)> {
-        Self::spawn_with_options(command, SpawnOptions::default())
-    }
-
-    /// Spawn claude resuming an existing session.
-    pub fn spawn_with_resume(
-        command: &str,
-        session_id: &str,
-    ) -> Result<(Self, mpsc::UnboundedReceiver<StreamEvent>)> {
-        Self::spawn_with_options(
-            command,
-            SpawnOptions {
-                resume_session_id: Some(session_id.to_string()),
-                ..Default::default()
-            },
-        )
-    }
-
     /// Spawn claude continuing the most recent session.
     pub fn spawn_with_continue(
         command: &str,
@@ -77,8 +57,10 @@ impl ClaudeProcess {
         cmd.args(args);
         cmd.args([
             "-p",
-            "--output-format", "stream-json",
-            "--input-format", "stream-json",
+            "--output-format",
+            "stream-json",
+            "--input-format",
+            "stream-json",
             "--verbose",
             "--include-partial-messages",
         ]);
@@ -115,7 +97,9 @@ impl ClaudeProcess {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let mut child = cmd.spawn().with_context(|| format!("Failed to spawn '{}'", command))?;
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("Failed to spawn '{}'", command))?;
 
         let stdin = child.stdin.take().context("Failed to get stdin")?;
         let stdout = child.stdout.take().context("Failed to get stdout")?;
@@ -167,7 +151,10 @@ impl ClaudeProcess {
 
     /// Kill the child process.
     pub async fn kill(&mut self) -> Result<()> {
-        self.child.kill().await.context("Failed to kill claude process")
+        self.child
+            .kill()
+            .await
+            .context("Failed to kill claude process")
     }
 }
 
@@ -185,7 +172,10 @@ mod tests {
     fn test_spawn_nonexistent_command_fails() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let result = ClaudeProcess::spawn("nonexistent_command_xyz_12345");
+            let result = ClaudeProcess::spawn_with_options(
+                "nonexistent_command_xyz_12345",
+                SpawnOptions::default(),
+            );
             assert!(result.is_err());
         });
     }

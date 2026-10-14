@@ -23,6 +23,7 @@ pub struct StatusBar<'a> {
 }
 
 impl<'a> StatusBar<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         theme: &'a Theme,
         input_tokens: u64,
@@ -69,7 +70,14 @@ fn context_bar(total_tokens: u64, bar_width: usize) -> (String, f64) {
 
 /// Write a string into the buffer at (start_x, y) with the given style.
 /// Returns the x position after the last written character.
-fn write_str(buf: &mut Buffer, text: &str, x_start: u16, y: u16, x_limit: u16, style: Style) -> u16 {
+fn write_str(
+    buf: &mut Buffer,
+    text: &str,
+    x_start: u16,
+    y: u16,
+    x_limit: u16,
+    style: Style,
+) -> u16 {
     let mut x = x_start;
     for ch in text.chars() {
         if x >= x_limit {
@@ -114,9 +122,7 @@ impl<'a> Widget for StatusBar<'a> {
             };
             let sep = " | ";
             left_end = write_str(buf, sep, left_end, area.y, area.right(), style);
-            let mode_style = Style::default()
-                .fg(color)
-                .bg(self.theme.status_bg);
+            let mode_style = Style::default().fg(color).bg(self.theme.status_bg);
             left_end = write_str(buf, label, left_end, area.y, area.right(), mode_style);
         }
 
@@ -130,9 +136,7 @@ impl<'a> Widget for StatusBar<'a> {
             } else {
                 self.theme.success
             };
-            let git_style = Style::default()
-                .fg(git_color)
-                .bg(self.theme.status_bg);
+            let git_style = Style::default().fg(git_color).bg(self.theme.status_bg);
             left_end = write_str(buf, &display, left_end, area.y, area.right(), git_style);
         }
 
@@ -161,13 +165,15 @@ impl<'a> Widget for StatusBar<'a> {
         let total_tokens = self.input_tokens + self.output_tokens;
         let has_usage = total_tokens > 0;
 
-        let short_model = self.model_name
-            .map(|m| cost::short_model_name(m))
+        let short_model = self
+            .model_name
+            .map(cost::short_model_name)
             .unwrap_or_default();
 
         let center_text = if has_usage {
-            let pricing = self.model_name
-                .map(|m| cost::pricing_for_model(m))
+            let pricing = self
+                .model_name
+                .map(cost::pricing_for_model)
                 .unwrap_or_else(|| cost::pricing_for_model("sonnet"));
             let session_cost = pricing.calculate_cost(self.input_tokens, self.output_tokens);
             let pct = ((total_tokens as f64 / CONTEXT_WINDOW_TOKENS as f64) * 100.0).min(100.0);
@@ -203,9 +209,7 @@ impl<'a> Widget for StatusBar<'a> {
             } else {
                 self.theme.error
             };
-            let bar_style = Style::default()
-                .fg(bar_color)
-                .bg(self.theme.status_bg);
+            let bar_style = Style::default().fg(bar_color).bg(self.theme.status_bg);
             write_str(buf, &bar, after_text, area.y, area.right(), bar_style);
         }
 

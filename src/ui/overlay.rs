@@ -62,7 +62,9 @@ impl OverlayState {
 
     pub fn selected_value(&self) -> Option<String> {
         let filtered = self.filtered_items();
-        filtered.get(self.selected).map(|(_, item)| item.value.clone())
+        filtered
+            .get(self.selected)
+            .map(|(_, item)| item.value.clone())
     }
 
     pub fn type_char(&mut self, c: char) {
@@ -85,7 +87,11 @@ pub struct OverlayWidget<'a> {
 
 impl<'a> OverlayWidget<'a> {
     pub fn new(title: &'a str, state: &'a OverlayState, theme: &'a Theme) -> Self {
-        Self { title, state, theme }
+        Self {
+            title,
+            state,
+            theme,
+        }
     }
 
     /// Calculate the centered popup area.
@@ -116,11 +122,19 @@ impl Widget for OverlayWidget<'_> {
         // Draw border
         let block = Block::default()
             .title(format!(" {} ", self.title))
-            .title_style(Style::default().fg(self.theme.primary).add_modifier(Modifier::BOLD))
+            .title_style(
+                Style::default()
+                    .fg(self.theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            )
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
             .border_style(Style::default().fg(self.theme.border_focused))
-            .style(Style::default().bg(self.theme.surface).fg(self.theme.foreground));
+            .style(
+                Style::default()
+                    .bg(self.theme.surface)
+                    .fg(self.theme.foreground),
+            );
 
         let inner = block.inner(popup);
         block.render(popup, buf);
@@ -133,7 +147,9 @@ impl Widget for OverlayWidget<'_> {
         let filter_y = inner.y;
         let prompt = "> ";
         let filter_text = format!("{}{}", prompt, self.state.filter);
-        let filter_style = Style::default().fg(self.theme.accent).bg(self.theme.surface);
+        let filter_style = Style::default()
+            .fg(self.theme.accent)
+            .bg(self.theme.surface);
         for (i, ch) in filter_text.chars().enumerate() {
             let x = inner.x + i as u16;
             if x >= inner.right() {
@@ -149,7 +165,11 @@ impl Widget for OverlayWidget<'_> {
         if cursor_x < inner.right() {
             if let Some(cell) = buf.cell_mut((cursor_x, filter_y)) {
                 cell.set_char('_');
-                cell.set_style(Style::default().fg(self.theme.input_cursor).bg(self.theme.surface));
+                cell.set_style(
+                    Style::default()
+                        .fg(self.theme.input_cursor)
+                        .bg(self.theme.surface),
+                );
             }
         }
         // Fill rest of filter row
@@ -166,7 +186,11 @@ impl Widget for OverlayWidget<'_> {
             for x in inner.x..inner.right() {
                 if let Some(cell) = buf.cell_mut((x, sep_y)) {
                     cell.set_char('─');
-                    cell.set_style(Style::default().fg(self.theme.border).bg(self.theme.surface));
+                    cell.set_style(
+                        Style::default()
+                            .fg(self.theme.border)
+                            .bg(self.theme.surface),
+                    );
                 }
             }
         }
@@ -200,7 +224,9 @@ impl Widget for OverlayWidget<'_> {
                     .bg(self.theme.overlay)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(self.theme.foreground).bg(self.theme.surface)
+                Style::default()
+                    .fg(self.theme.foreground)
+                    .bg(self.theme.surface)
             };
 
             // Fill row background
@@ -227,9 +253,13 @@ impl Widget for OverlayWidget<'_> {
             // Write hint on the right side
             if !hint.is_empty() {
                 let hint_style = if is_selected {
-                    Style::default().fg(self.theme.secondary).bg(self.theme.overlay)
+                    Style::default()
+                        .fg(self.theme.secondary)
+                        .bg(self.theme.overlay)
                 } else {
-                    Style::default().fg(self.theme.border).bg(self.theme.surface)
+                    Style::default()
+                        .fg(self.theme.border)
+                        .bg(self.theme.surface)
                 };
                 let hint_start = inner.right().saturating_sub(hint.len() as u16 + 1);
                 for (i, ch) in hint.chars().enumerate() {
@@ -295,10 +325,8 @@ mod tests {
 
     #[test]
     fn test_overlay_state_selected_value() {
-        let mut state = OverlayState::new(
-            vec![item("A", "val-a", ""), item("B", "val-b", "")],
-            None,
-        );
+        let mut state =
+            OverlayState::new(vec![item("A", "val-a", ""), item("B", "val-b", "")], None);
         assert_eq!(state.selected_value(), Some("val-a".to_string()));
         state.move_down();
         assert_eq!(state.selected_value(), Some("val-b".to_string()));

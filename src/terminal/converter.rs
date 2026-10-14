@@ -132,10 +132,7 @@ mod tests {
 
     #[test]
     fn test_convert_bg_colored_indexed_preserved() {
-        assert_eq!(
-            convert_bg(vt100::Color::Idx(1), TEST_BG),
-            Color::Indexed(1)
-        );
+        assert_eq!(convert_bg(vt100::Color::Idx(1), TEST_BG), Color::Indexed(1));
     }
 
     #[test]
@@ -145,10 +142,7 @@ mod tests {
 
     #[test]
     fn test_convert_fg_indexed() {
-        assert_eq!(
-            convert_fg(vt100::Color::Idx(1), TEST_BG),
-            Color::Indexed(1)
-        );
+        assert_eq!(convert_fg(vt100::Color::Idx(1), TEST_BG), Color::Indexed(1));
     }
 
     #[test]
@@ -218,9 +212,9 @@ mod tests {
 
     #[test]
     fn test_is_dark_bg() {
-        assert!(is_dark_bg(0, 0, 0));       // pure black
-        assert!(is_dark_bg(20, 20, 30));     // dark gray/blue
-        assert!(is_dark_bg(30, 30, 46));     // catppuccin base
+        assert!(is_dark_bg(0, 0, 0)); // pure black
+        assert!(is_dark_bg(20, 20, 30)); // dark gray/blue
+        assert!(is_dark_bg(30, 30, 46)); // catppuccin base
         assert!(!is_dark_bg(100, 100, 100)); // mid gray
         assert!(!is_dark_bg(255, 255, 255)); // white
     }

@@ -21,7 +21,7 @@ use crate::git::GitInfo;
 use crate::theme::Theme;
 use crate::ui::toast::Toast;
 use claude_pane::ClaudePane;
-use header::{Header, HEADER_HEIGHT, COMPACT_HEADER_HEIGHT};
+use header::{Header, COMPACT_HEADER_HEIGHT, HEADER_HEIGHT};
 use input::{InputEditor, InputWidget};
 use overlay::{OverlayState, OverlayWidget};
 use status_bar::StatusBar;
@@ -56,13 +56,17 @@ pub fn render(
     } else {
         // Allow input to grow up to 10 lines for multi-line content (e.g. paste)
         let line_count = input.content().lines().count() as u16 + 1;
-        let max_height = (size.height / 3).max(3).min(10);
+        let max_height = (size.height / 3).clamp(3, 10);
         max_height.min(line_count)
     };
 
     // Collapse header to single line once conversation has messages
     let compact_header = !conversation.messages.is_empty();
-    let header_height = if compact_header { COMPACT_HEADER_HEIGHT } else { HEADER_HEIGHT };
+    let header_height = if compact_header {
+        COMPACT_HEADER_HEIGHT
+    } else {
+        HEADER_HEIGHT
+    };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -75,16 +79,16 @@ pub fn render(
         .split(size);
 
     // Animated header (compact when conversation has content)
-    frame.render_widget(Header::new(theme, frame_count).compact(compact_header), chunks[0]);
+    frame.render_widget(
+        Header::new(theme, frame_count).compact(compact_header),
+        chunks[0],
+    );
 
     // Claude pane (optionally split horizontally with right pane)
     if let Some(content) = split_content {
         let pane_chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(60),
-                Constraint::Percentage(40),
-            ])
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
             .split(chunks[1]);
 
         // Left: conversation
@@ -124,7 +128,16 @@ pub fn render(
 
     // Status bar
     frame.render_widget(
-        StatusBar::new(theme, token_usage.0, token_usage.1, git_info, todo_summary, model_name, permission_mode, active_tool),
+        StatusBar::new(
+            theme,
+            token_usage.0,
+            token_usage.1,
+            git_info,
+            todo_summary,
+            model_name,
+            permission_mode,
+            active_tool,
+        ),
         chunks[3],
     );
 
@@ -135,7 +148,13 @@ pub fn render(
 }
 
 /// Render the right split pane with contextual content.
-fn render_split_pane(frame: &mut Frame, area: Rect, content: &SplitContent, scroll: usize, theme: &Theme) {
+fn render_split_pane(
+    frame: &mut Frame,
+    area: Rect,
+    content: &SplitContent,
+    scroll: usize,
+    theme: &Theme,
+) {
     let (title, lines) = match content {
         SplitContent::FilePreview(path, lines) => {
             // Show just the filename in the title
@@ -154,7 +173,11 @@ fn render_split_pane(frame: &mut Frame, area: Rect, content: &SplitContent, scro
         .border_set(border::ROUNDED)
         .border_style(Style::default().fg(theme.border_focused))
         .title(title)
-        .title_style(Style::default().fg(theme.primary).add_modifier(Modifier::BOLD));
+        .title_style(
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        );
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -162,7 +185,12 @@ fn render_split_pane(frame: &mut Frame, area: Rect, content: &SplitContent, scro
     let visible_height = inner.height as usize;
     let clamped_scroll = scroll.min(lines.len().saturating_sub(visible_height));
 
-    for (i, line) in lines.iter().skip(clamped_scroll).take(visible_height).enumerate() {
+    for (i, line) in lines
+        .iter()
+        .skip(clamped_scroll)
+        .take(visible_height)
+        .enumerate()
+    {
         let y = inner.y + i as u16;
         let x = inner.x;
         let max_x = inner.right();
@@ -177,7 +205,9 @@ fn render_split_pane(frame: &mut Frame, area: Rect, content: &SplitContent, scro
                 } else if line.starts_with("@@") {
                     Style::default().fg(theme.info)
                 } else if line.starts_with("---") || line.starts_with("+++") {
-                    Style::default().fg(theme.primary).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(theme.primary)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(theme.foreground)
                 }
@@ -186,9 +216,7 @@ fn render_split_pane(frame: &mut Frame, area: Rect, content: &SplitContent, scro
                 // Show line numbers in dim, content in normal
                 Style::default().fg(theme.foreground)
             }
-            SplitContent::FileContext(_) => {
-                Style::default().fg(theme.foreground)
-            }
+            SplitContent::FileContext(_) => Style::default().fg(theme.foreground),
         };
 
         let mut cx = x;
@@ -224,7 +252,12 @@ fn render_split_pane(frame: &mut Frame, area: Rect, content: &SplitContent, scro
 }
 
 /// Render the slash command completion popup just above the input area.
-fn render_completion_popup(buf: &mut Buffer, state: &CompletionState, input_area: Rect, theme: &Theme) {
+fn render_completion_popup(
+    buf: &mut Buffer,
+    state: &CompletionState,
+    input_area: Rect,
+    theme: &Theme,
+) {
     if state.matches.is_empty() {
         return;
     }
@@ -278,7 +311,13 @@ fn render_completion_popup(buf: &mut Buffer, state: &CompletionState, input_area
         0
     };
 
-    for (vi, item) in state.matches.iter().skip(scroll).take(max_visible).enumerate() {
+    for (vi, item) in state
+        .matches
+        .iter()
+        .skip(scroll)
+        .take(max_visible)
+        .enumerate()
+    {
         let y = inner.y + vi as u16;
         if y >= inner.bottom() {
             break;
@@ -294,13 +333,9 @@ fn render_completion_popup(buf: &mut Buffer, state: &CompletionState, input_area
             Style::default().fg(theme.foreground).bg(theme.surface)
         };
         let desc_style = if is_selected {
-            Style::default()
-                .fg(theme.info)
-                .bg(theme.overlay)
+            Style::default().fg(theme.info).bg(theme.overlay)
         } else {
-            Style::default()
-                .fg(theme.info)
-                .bg(theme.surface)
+            Style::default().fg(theme.info).bg(theme.surface)
         };
 
         // Fill row background
@@ -371,8 +406,12 @@ pub fn render_text_viewer(
     let area = frame.area();
 
     // Calculate popup size (~80% of screen)
-    let width = (area.width * 80 / 100).max(40).min(area.width.saturating_sub(4));
-    let height = (area.height * 80 / 100).max(10).min(area.height.saturating_sub(2));
+    let width = (area.width * 80 / 100)
+        .max(40)
+        .min(area.width.saturating_sub(4));
+    let height = (area.height * 80 / 100)
+        .max(10)
+        .min(area.height.saturating_sub(2));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let popup = Rect::new(x, y, width, height);
@@ -386,7 +425,11 @@ pub fn render_text_viewer(
     let scroll_hint = format!(" {}/{} | Esc to close ", scroll + 1, lines.len().max(1));
     let block = Block::default()
         .title(format!(" {} ", title))
-        .title_style(Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))
+        .title_style(
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        )
         .title_bottom(scroll_hint)
         .borders(Borders::ALL)
         .border_set(border::ROUNDED)
@@ -424,7 +467,12 @@ pub fn render_text_viewer(
         .add_modifier(Modifier::BOLD);
 
     // Collect visible lines with their absolute indices for lookahead
-    let visible_lines: Vec<(usize, &String)> = lines.iter().skip(scroll).take(visible).enumerate().collect();
+    let visible_lines: Vec<(usize, &String)> = lines
+        .iter()
+        .skip(scroll)
+        .take(visible)
+        .enumerate()
+        .collect();
     let mut skip_next = false;
 
     for (vi, &(i, line)) in visible_lines.iter().enumerate() {
@@ -436,7 +484,8 @@ pub fn render_text_viewer(
 
         // Check for adjacent Remove+Add pair for word-level diff
         let is_remove = line.starts_with("- ") && !line.starts_with("--- ");
-        let next_is_add = visible_lines.get(vi + 1)
+        let next_is_add = visible_lines
+            .get(vi + 1)
             .map(|&(_, next)| next.starts_with("+ ") && !next.starts_with("+++ "))
             .unwrap_or(false);
 
@@ -450,7 +499,9 @@ pub fn render_text_viewer(
             let mut col = inner.x;
             // Write "- " prefix
             for ch in "- ".chars() {
-                if col >= inner.right() { break; }
+                if col >= inner.right() {
+                    break;
+                }
                 if let Some(cell) = buf.cell_mut((col, row_y)) {
                     cell.set_char(ch);
                     cell.set_style(diff_remove_style);
@@ -464,7 +515,9 @@ pub fn render_text_viewer(
                     DiffOp::Add(_) => continue, // skip adds on the remove line
                 };
                 for ch in text.chars() {
-                    if col >= inner.right() { break; }
+                    if col >= inner.right() {
+                        break;
+                    }
                     if let Some(cell) = buf.cell_mut((col, row_y)) {
                         cell.set_char(ch);
                         cell.set_style(style);
@@ -478,7 +531,9 @@ pub fn render_text_viewer(
             if next_row_y < inner.bottom() {
                 let mut col = inner.x;
                 for ch in "+ ".chars() {
-                    if col >= inner.right() { break; }
+                    if col >= inner.right() {
+                        break;
+                    }
                     if let Some(cell) = buf.cell_mut((col, next_row_y)) {
                         cell.set_char(ch);
                         cell.set_style(diff_add_style);
@@ -492,7 +547,9 @@ pub fn render_text_viewer(
                         DiffOp::Remove(_) => continue, // skip removes on the add line
                     };
                     for ch in text.chars() {
-                        if col >= inner.right() { break; }
+                        if col >= inner.right() {
+                            break;
+                        }
                         if let Some(cell) = buf.cell_mut((col, next_row_y)) {
                             cell.set_char(ch);
                             cell.set_style(style);
@@ -544,7 +601,9 @@ pub fn render_history_search(
     let area = frame.area();
 
     // Popup size: ~60% width, up to 50% height
-    let width = (area.width * 60 / 100).max(30).min(area.width.saturating_sub(4));
+    let width = (area.width * 60 / 100)
+        .max(30)
+        .min(area.width.saturating_sub(4));
     let max_items = 12usize;
     let height = ((max_items as u16) + 4).min(area.height.saturating_sub(2)); // +4 for borders+query
     let x = area.x + (area.width.saturating_sub(width)) / 2;
@@ -554,11 +613,25 @@ pub fn render_history_search(
     let buf = frame.buffer_mut();
     Clear.render(popup, buf);
 
-    let title = format!(" History Search: {} ", if query.is_empty() { "(type to filter)" } else { query });
+    let title = format!(
+        " History Search: {} ",
+        if query.is_empty() {
+            "(type to filter)"
+        } else {
+            query
+        }
+    );
     let block = Block::default()
         .title(title)
-        .title_style(Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))
-        .title_bottom(format!(" {} matches | Enter to select | Esc to cancel ", matches.len()))
+        .title_style(
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        )
+        .title_bottom(format!(
+            " {} matches | Enter to select | Esc to cancel ",
+            matches.len()
+        ))
         .borders(Borders::ALL)
         .border_set(border::ROUNDED)
         .border_style(Style::default().fg(theme.border_focused))
@@ -643,7 +716,9 @@ pub fn render_text_input(
     let area = frame.area();
 
     // Small centered popup: ~50% width, 5 rows (border + prompt + input + hint + border)
-    let width = (area.width * 50 / 100).max(30).min(area.width.saturating_sub(4));
+    let width = (area.width * 50 / 100)
+        .max(30)
+        .min(area.width.saturating_sub(4));
     let height: u16 = 5;
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
@@ -654,7 +729,11 @@ pub fn render_text_input(
 
     let block = Block::default()
         .title(format!(" {} ", prompt))
-        .title_style(Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))
+        .title_style(
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        )
         .title_bottom(" Enter to confirm | Esc to cancel ")
         .borders(Borders::ALL)
         .border_set(border::ROUNDED)
@@ -689,7 +768,11 @@ pub fn render_text_input(
         if col >= inner.right() {
             break;
         }
-        let style = if i == cursor { cursor_style } else { text_style };
+        let style = if i == cursor {
+            cursor_style
+        } else {
+            text_style
+        };
         if let Some(cell) = buf.cell_mut((col, text_y)) {
             cell.set_char(ch);
             cell.set_style(style);
@@ -719,7 +802,9 @@ pub fn render_user_question(
     let area = frame.area();
 
     // Calculate popup size
-    let max_width = (area.width * 70 / 100).max(40).min(area.width.saturating_sub(4));
+    let max_width = (area.width * 70 / 100)
+        .max(40)
+        .min(area.width.saturating_sub(4));
 
     // Height: border(1) + question(1) + blank(1) + options + blank(1) + hint(1) + border(1)
     let content_height = 3 + options.len() as u16 + 1;
@@ -731,7 +816,11 @@ pub fn render_user_question(
     let buf = frame.buffer_mut();
     Clear.render(popup, buf);
 
-    let title = if multi_select { " Select Multiple " } else { " Select One " };
+    let title = if multi_select {
+        " Select Multiple "
+    } else {
+        " Select One "
+    };
     let hint = if multi_select {
         " Space to toggle | Enter to confirm | Esc to dismiss "
     } else {
@@ -739,7 +828,11 @@ pub fn render_user_question(
     };
     let block = Block::default()
         .title(title)
-        .title_style(Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))
+        .title_style(
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        )
         .title_bottom(hint)
         .borders(Borders::ALL)
         .border_set(border::ROUNDED)
@@ -800,9 +893,7 @@ pub fn render_user_question(
         // Choose marker
         let marker = if multi_select {
             if is_selected {
-                if is_highlighted { " [x] " } else { " [x] " }
-            } else if is_highlighted {
-                " [ ] "
+                " [x] "
             } else {
                 " [ ] "
             }
@@ -840,7 +931,9 @@ pub fn render_user_question(
         // Write marker + label
         let mut c = inner.x;
         for ch in marker.chars() {
-            if c >= inner.right() { break; }
+            if c >= inner.right() {
+                break;
+            }
             if let Some(cell) = buf.cell_mut((c, opt_y)) {
                 cell.set_char(ch);
                 cell.set_style(label_style);
@@ -848,7 +941,9 @@ pub fn render_user_question(
             c += 1;
         }
         for ch in label.chars() {
-            if c >= inner.right() { break; }
+            if c >= inner.right() {
+                break;
+            }
             if let Some(cell) = buf.cell_mut((c, opt_y)) {
                 cell.set_char(ch);
                 cell.set_style(label_style);
@@ -860,7 +955,9 @@ pub fn render_user_question(
         if !description.is_empty() && c + 3 < inner.right() {
             // Separator
             for ch in " - ".chars() {
-                if c >= inner.right() { break; }
+                if c >= inner.right() {
+                    break;
+                }
                 if let Some(cell) = buf.cell_mut((c, opt_y)) {
                     cell.set_char(ch);
                     cell.set_style(desc_style);
@@ -868,7 +965,9 @@ pub fn render_user_question(
                 c += 1;
             }
             for ch in description.chars() {
-                if c >= inner.right() { break; }
+                if c >= inner.right() {
+                    break;
+                }
                 if let Some(cell) = buf.cell_mut((c, opt_y)) {
                     cell.set_char(ch);
                     cell.set_style(desc_style);
@@ -885,13 +984,18 @@ pub fn render_plugin_browser(
     plugins: &[PluginInfo],
     cursor: usize,
     _scroll: usize,
+    loading: Option<&str>,
     theme: &Theme,
 ) {
     let area = frame.area();
 
-    // Calculate popup size (~80% of screen)
-    let width = (area.width * 80 / 100).max(50).min(area.width.saturating_sub(4));
-    let height = (area.height * 80 / 100).max(10).min(area.height.saturating_sub(2));
+    // Smaller centered modal (~60% width, ~50% height)
+    let width = (area.width * 60 / 100)
+        .max(44)
+        .min(area.width.saturating_sub(4));
+    let height = (area.height * 50 / 100)
+        .max(8)
+        .min(area.height.saturating_sub(2));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let popup = Rect::new(x, y, width, height);
@@ -900,12 +1004,24 @@ pub fn render_plugin_browser(
     Clear.render(popup, buf);
 
     let enabled_count = plugins.iter().filter(|p| p.enabled).count();
-    let title = format!(" Plugins ({} available, {} enabled) ", plugins.len(), enabled_count);
-    let hint = " Enter:readme  Space:toggle  i:install  u:uninstall  Esc:close ";
+    let title = format!(
+        " Plugins ({} available, {} enabled) ",
+        plugins.len(),
+        enabled_count
+    );
+    let hint = if loading.is_some() {
+        " Esc:close "
+    } else {
+        " Enter:readme  Space:toggle  i:install  u:uninstall  Esc:close "
+    };
 
     let block = Block::default()
         .title(title)
-        .title_style(Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))
+        .title_style(
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        )
         .title_bottom(hint)
         .borders(Borders::ALL)
         .border_set(border::ROUNDED)
@@ -916,6 +1032,28 @@ pub fn render_plugin_browser(
     block.render(popup, buf);
 
     if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    // Show loading indicator if a plugin operation is in progress
+    if let Some(loading_text) = loading {
+        let msg_y = inner.y + inner.height / 2;
+        let loading_style = Style::default()
+            .fg(theme.warning)
+            .bg(theme.surface)
+            .add_modifier(Modifier::BOLD);
+        let text = format!(" {} ", loading_text);
+        let start_col = inner.x + inner.width.saturating_sub(text.len() as u16) / 2;
+        for (offset, ch) in text.chars().enumerate() {
+            let col = start_col + offset as u16;
+            if col >= inner.right() {
+                break;
+            }
+            if let Some(cell) = buf.cell_mut((col, msg_y)) {
+                cell.set_char(ch);
+                cell.set_style(loading_style);
+            }
+        }
         return;
     }
 
@@ -941,10 +1079,17 @@ pub fn render_plugin_browser(
             theme.input_placeholder
         };
 
-        let row_bg = if is_selected { theme.overlay } else { theme.surface };
+        let row_bg = if is_selected {
+            theme.overlay
+        } else {
+            theme.surface
+        };
         let icon_style = Style::default().fg(icon_color).bg(row_bg);
         let name_style = if is_selected {
-            Style::default().fg(theme.primary).bg(row_bg).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.primary)
+                .bg(row_bg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.foreground).bg(row_bg)
         };
@@ -963,7 +1108,9 @@ pub fn render_plugin_browser(
         // Write " [+] "
         let icon_text = format!(" {} ", icon);
         for ch in icon_text.chars() {
-            if col >= inner.right() { break; }
+            if col >= inner.right() {
+                break;
+            }
             if let Some(cell) = buf.cell_mut((col, row_y)) {
                 cell.set_char(ch);
                 cell.set_style(icon_style);
@@ -973,7 +1120,9 @@ pub fn render_plugin_browser(
 
         // Write plugin name
         for ch in plugin.name.chars() {
-            if col >= inner.right() { break; }
+            if col >= inner.right() {
+                break;
+            }
             if let Some(cell) = buf.cell_mut((col, row_y)) {
                 cell.set_char(ch);
                 cell.set_style(name_style);
@@ -985,7 +1134,9 @@ pub fn render_plugin_browser(
         if plugin.is_mcp {
             let tag = " [MCP]";
             for ch in tag.chars() {
-                if col >= inner.right() { break; }
+                if col >= inner.right() {
+                    break;
+                }
                 if let Some(cell) = buf.cell_mut((col, row_y)) {
                     cell.set_char(ch);
                     cell.set_style(tag_style);
@@ -997,7 +1148,9 @@ pub fn render_plugin_browser(
         // Write " — description"
         let sep = " — ";
         for ch in sep.chars() {
-            if col >= inner.right() { break; }
+            if col >= inner.right() {
+                break;
+            }
             if let Some(cell) = buf.cell_mut((col, row_y)) {
                 cell.set_char(ch);
                 cell.set_style(desc_style);
@@ -1007,7 +1160,9 @@ pub fn render_plugin_browser(
 
         // Truncate description to fit
         for ch in plugin.description.chars() {
-            if col >= inner.right() { break; }
+            if col >= inner.right() {
+                break;
+            }
             if let Some(cell) = buf.cell_mut((col, row_y)) {
                 cell.set_char(ch);
                 cell.set_style(desc_style);
@@ -1026,8 +1181,12 @@ pub fn render_agent_dashboard(
 ) {
     let area = frame.area();
 
-    let width = (area.width * 75 / 100).max(50).min(area.width.saturating_sub(4));
-    let height = (area.height * 70 / 100).max(10).min(area.height.saturating_sub(2));
+    let width = (area.width * 75 / 100)
+        .max(50)
+        .min(area.width.saturating_sub(4));
+    let height = (area.height * 70 / 100)
+        .max(10)
+        .min(area.height.saturating_sub(2));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let popup = Rect::new(x, y, width, height);
@@ -1036,12 +1195,20 @@ pub fn render_agent_dashboard(
     Clear.render(popup, buf);
 
     let active_count = tasks.iter().filter(|t| !t.completed).count();
-    let title = format!(" Agent Dashboard ({} active / {} total) ", active_count, tasks.len());
+    let title = format!(
+        " Agent Dashboard ({} active / {} total) ",
+        active_count,
+        tasks.len()
+    );
     let hint = " j/k:scroll  Esc:close ";
 
     let block = Block::default()
         .title(title)
-        .title_style(Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))
+        .title_style(
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        )
         .title_bottom(hint)
         .borders(Borders::ALL)
         .border_set(border::ROUNDED)
@@ -1057,10 +1224,15 @@ pub fn render_agent_dashboard(
 
     // Header row
     let header = "  STATUS   TYPE             ELAPSED  DESCRIPTION";
-    let header_style = Style::default().fg(theme.primary).bg(theme.surface).add_modifier(Modifier::BOLD);
+    let header_style = Style::default()
+        .fg(theme.primary)
+        .bg(theme.surface)
+        .add_modifier(Modifier::BOLD);
     let mut hx = inner.x;
     for ch in header.chars() {
-        if hx >= inner.right() { break; }
+        if hx >= inner.right() {
+            break;
+        }
         if let Some(cell) = buf.cell_mut((hx, inner.y)) {
             cell.set_char(ch);
             cell.set_style(header_style);
@@ -1086,10 +1258,16 @@ pub fn render_agent_dashboard(
 
     for (i, task) in tasks.iter().enumerate().skip(clamped_scroll).take(visible) {
         let row_y = data_start + (i - clamped_scroll) as u16;
-        if row_y >= inner.bottom() { break; }
+        if row_y >= inner.bottom() {
+            break;
+        }
 
         let is_highlighted = i == scroll;
-        let row_bg = if is_highlighted { theme.overlay } else { theme.surface };
+        let row_bg = if is_highlighted {
+            theme.overlay
+        } else {
+            theme.surface
+        };
 
         // Fill row background
         for col in inner.x..inner.right() {
@@ -1117,11 +1295,14 @@ pub fn render_agent_dashboard(
         };
 
         // Agent type (padded to 16 chars)
-        let agent_type = format!("{:<16}", if task.agent_type.len() > 16 {
-            &task.agent_type[..16]
-        } else {
-            &task.agent_type
-        });
+        let agent_type = format!(
+            "{:<16}",
+            if task.agent_type.len() > 16 {
+                &task.agent_type[..16]
+            } else {
+                &task.agent_type
+            }
+        );
 
         let status_style = Style::default().fg(status_color).bg(row_bg);
         let type_style = Style::default().fg(theme.info).bg(row_bg);
@@ -1132,7 +1313,9 @@ pub fn render_agent_dashboard(
 
         // Status
         for ch in status_icon.chars() {
-            if col >= inner.right() { break; }
+            if col >= inner.right() {
+                break;
+            }
             if let Some(cell) = buf.cell_mut((col, row_y)) {
                 cell.set_char(ch);
                 cell.set_style(status_style);
@@ -1143,7 +1326,9 @@ pub fn render_agent_dashboard(
 
         // Agent type
         for ch in agent_type.chars() {
-            if col >= inner.right() { break; }
+            if col >= inner.right() {
+                break;
+            }
             if let Some(cell) = buf.cell_mut((col, row_y)) {
                 cell.set_char(ch);
                 cell.set_style(type_style);
@@ -1155,7 +1340,9 @@ pub fn render_agent_dashboard(
         // Elapsed
         let elapsed_padded = format!("{:>6}  ", elapsed_str);
         for ch in elapsed_padded.chars() {
-            if col >= inner.right() { break; }
+            if col >= inner.right() {
+                break;
+            }
             if let Some(cell) = buf.cell_mut((col, row_y)) {
                 cell.set_char(ch);
                 cell.set_style(elapsed_style);
@@ -1165,7 +1352,9 @@ pub fn render_agent_dashboard(
 
         // Description
         for ch in task.description.chars() {
-            if col >= inner.right() { break; }
+            if col >= inner.right() {
+                break;
+            }
             if let Some(cell) = buf.cell_mut((col, row_y)) {
                 cell.set_char(ch);
                 cell.set_style(desc_style);

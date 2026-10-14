@@ -35,7 +35,11 @@ pub struct Header<'a> {
 
 impl<'a> Header<'a> {
     pub fn new(theme: &'a Theme, frame_count: u64) -> Self {
-        Self { theme, frame_count, compact: false }
+        Self {
+            theme,
+            frame_count,
+            compact: false,
+        }
     }
 
     pub fn compact(mut self, compact: bool) -> Self {
@@ -71,10 +75,15 @@ impl Widget for Header<'_> {
             let phase = frame as f64 * 0.02;
             for (i, ch) in text.chars().enumerate() {
                 let x = start_x + i as u16;
-                if x >= area.right() { break; }
+                if x >= area.right() {
+                    break;
+                }
                 let position = (i as f64 / text_len.max(1) as f64) + phase;
                 let color = gradient_color(self.theme, position);
-                let style = Style::default().fg(color).bg(bg).add_modifier(Modifier::BOLD);
+                let style = Style::default()
+                    .fg(color)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD);
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(ch);
                     cell.set_style(style);
@@ -217,7 +226,8 @@ impl Header<'_> {
 
 /// Simple pseudo-random hash for deterministic sparkle placement.
 fn pseudo_hash(x: u64, y: u64, frame: u64) -> u64 {
-    let mut v = x.wrapping_mul(2654435761) ^ y.wrapping_mul(2246822519) ^ frame.wrapping_mul(3266489917);
+    let mut v =
+        x.wrapping_mul(2654435761) ^ y.wrapping_mul(2246822519) ^ frame.wrapping_mul(3266489917);
     v ^= v >> 16;
     v = v.wrapping_mul(0x45d9f3b);
     v ^= v >> 16;

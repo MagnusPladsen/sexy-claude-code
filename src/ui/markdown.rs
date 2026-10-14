@@ -79,10 +79,7 @@ struct RenderContext<'a> {
 
 impl<'a> RenderContext<'a> {
     fn current_style(&self) -> Style {
-        self.style_stack
-            .last()
-            .copied()
-            .unwrap_or(self.base_style)
+        self.style_stack.last().copied().unwrap_or(self.base_style)
     }
 
     fn push_modifier(&mut self, modifier: Modifier) {
@@ -152,7 +149,8 @@ impl<'a> RenderContext<'a> {
                 let fence_style = Style::default()
                     .fg(Color::Rgb(127, 132, 156))
                     .add_modifier(Modifier::DIM);
-                self.lines.push(StyledLine::plain(&fence_label, fence_style));
+                self.lines
+                    .push(StyledLine::plain(&fence_label, fence_style));
             }
 
             Event::End(TagEnd::CodeBlock) => {
@@ -360,9 +358,7 @@ impl<'a> RenderContext<'a> {
             Some(syn) => {
                 let mut h = HighlightLines::new(syn, self.syntax_theme);
                 for line in self.code_block_buf.lines() {
-                    let ranges = h
-                        .highlight_line(line, self.ss)
-                        .unwrap_or_default();
+                    let ranges = h.highlight_line(line, self.ss).unwrap_or_default();
                     let spans: Vec<StyledSpan> = ranges
                         .iter()
                         .map(|(style, text)| {
@@ -459,7 +455,13 @@ mod tests {
         // First and last lines should be fences
         let first_text: String = lines[0].spans.iter().map(|s| s.text.as_str()).collect();
         assert!(first_text.contains("```rust"));
-        let last_text: String = lines.last().unwrap().spans.iter().map(|s| s.text.as_str()).collect();
+        let last_text: String = lines
+            .last()
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
         assert!(last_text.contains("```"));
     }
 
